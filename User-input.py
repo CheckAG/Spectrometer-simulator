@@ -8,6 +8,7 @@ from streamlit.components.v1 import html
 from streamlit_extras.switch_page_button import switch_page
 from streamlit_extras.add_vertical_space import add_vertical_space
 from streamlit_extras.colored_header import colored_header
+import base64
 
 
 st.set_page_config(page_title="Optics sim", page_icon="🔭")
@@ -19,6 +20,17 @@ colored_header(
     description="A easy way to design your first spectrometer",
     color_name="violet-70",
 )
+
+with st.expander("**🎓 Click here to see how an spectrometer works:**"):
+    file_ = open("img\optics_work.gif", "rb")
+    contents = file_.read()
+    data_url = base64.b64encode(contents).decode("utf-8")
+    file_.close()
+
+    st.markdown(
+        f'<img src="data:image/gif;base64,{data_url}" alt="cat gif">',
+        unsafe_allow_html=True,
+    )
 
 with st.sidebar:
     st.subheader("Please input the Spectral resolution and Span according to your spectrometer design specification")
