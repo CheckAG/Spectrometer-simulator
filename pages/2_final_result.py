@@ -61,7 +61,7 @@ with user_input:
         calculated incident angle is _{st.session_state.incident_angle_calculated}_ degrees.\n \
             if you wish to change the incident angle please use below slider", icon="ℹ️")
     if np.isnan(st.session_state.incident_angle_calculated):
-        st.error("caculated incident angle exeeds 90 degree, please set incident angle manually ")
+        st.error("calculated incident angle exeeds 90 degree, please set incident angle manually ")
         st.slider(label="_**Please chnage the incident angle here (in degrees)**_",
                 min_value=0,
                 max_value=200,
