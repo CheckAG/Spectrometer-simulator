@@ -51,12 +51,14 @@ st.session_state.N = closest_value(groove_list, st.session_state.N_calculated)
 
 with user_input:
 
-    annotated_text(
-    annotation(f"The entered Spectral Resolution is {st.session_state['spectral_resolution']} nm \
-                with span of {st.session_state.span} nm",background='#DBF9DB', color="black", 
-                border="1px solid red",
-                )
-    )
+    # annotated_text(
+    # annotation(f"The entered Spectral Resolution is {st.session_state['spectral_resolution']} nm \
+    #             with span of {st.session_state.span} nm",background='#DBF9DB', color="black", 
+    #             border="1px solid red",
+    #             )
+    # )
+    st.info(f"The entered Spectral Resolution is {st.session_state['spectral_resolution']} nm \
+                with span of {st.session_state.span} nm", icon="ℹ️")
     add_vertical_space(1)
     # st.info(f"The entered Spectral Resolution is {st.session_state['spectral_resolution']} nm \
     #             with span of {st.session_state.span} nm", icon="ℹ️")
