@@ -3,5 +3,5 @@ numpy
 matplotlib
 scipy
 Pillow
-streamlit-extras==0.2.4
+streamlit-extras
 PyQt5==5.15.4
