@@ -1,6 +1,6 @@
 streamlit
 numpy
-matplotlib
+matplotlib==3.7.5
 scipy
 Pillow
 streamlit-extras==0.2.4
