@@ -1,4 +1,4 @@
-streamlit
+streamlit==1.16.0
 numpy
 matplotlib
 scipy
