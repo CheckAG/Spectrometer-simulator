@@ -17,8 +17,11 @@ def calculated_optical_dispersion():
     blazewl_m_N = st.session_state.blaze_wavelength*(1e-6)* st.session_state.m * st.session_state.N
     m_n = (st.session_state.m*st.session_state.N)
     sin_alpha = np.sin(st.session_state.incident_angle*np.pi/180)
-
-    return np.round(m_n/(np.sqrt(1-(blazewl_m_N-sin_alpha)**2)),2)
+    result = np.round(m_n/(np.sqrt(1-(blazewl_m_N-sin_alpha)**2)),2)
+    if result is np.NaN:
+        return st.session_state.blaze_wavelength
+    else:
+        return result
 
 def calculated_incident_angle():
     blazewl_m_N = st.session_state.blaze_wavelength*(1e-6)* st.session_state.m * st.session_state.N
@@ -110,7 +113,7 @@ with user_input:
                         min_value=0.1,
                         max_value=200.0,
                         key='f2',
-                        value=st.session_state.f2_calculated)
+                        value=50.0)
     with c1:
         st.number_input(label="_**please set the value of f1:**_",
                         min_value=0.1,
