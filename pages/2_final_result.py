@@ -98,7 +98,6 @@ with user_input:
 
     st.session_state.optical_dispersion = calculated_optical_dispersion()
     st.session_state.f2_calculated = np.round(1.5*st.session_state.pixel_size*1e-3/(np.tan(st.session_state.optical_dispersion*st.session_state.spectral_resolution*1e-6)/2),2)
-    
     st.info(f"Prescibed values of f2: {st.session_state.f2_calculated}", icon="ℹ️")
 
     add_vertical_space(2)
@@ -128,20 +127,24 @@ with user_input:
     st.header("Ray tracing simulation:")
 
     with st.spinner('simulation running...'):
-        design_rendering(f1=st.session_state.f1,
-                            f2=st.session_state.f2,
-                            lens_aperture=25.4,
-                            grating_aperture=50.8,
-                            sensor_width=st.session_state.sensor_width,
-                            start_wavelength=st.session_state.span_start,
-                            end_wavelength=st.session_state.span_end,
-                            incident_angle=st.session_state.incident_angle,
-                            difracted_angle=st.session_state.beta_middle,
-                            N=st.session_state.N)
+        try:
+            design_rendering(f1=st.session_state.f1,
+                                f2=st.session_state.f2,
+                                lens_aperture=25.4,
+                                grating_aperture=50.8,
+                                sensor_width=st.session_state.sensor_width,
+                                start_wavelength=st.session_state.span_start,
+                                end_wavelength=st.session_state.span_end,
+                                incident_angle=st.session_state.incident_angle,
+                                difracted_angle=st.session_state.beta_middle,
+                                N=st.session_state.N)
+            if os.path.exists("img/grating.png"):
+                image = Image.open("img/grating.png")
+                st.image(image)
+        except:
+            st.text_input("Failed to simulate!!!")
     
-    if os.path.exists("img/grating.png"):
-        image = Image.open("img/grating.png")
-        st.image(image)
+    
 
     add_vertical_space(2)
 
