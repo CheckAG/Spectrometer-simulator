@@ -160,7 +160,12 @@ class Grating(OpticalObject):
         sin_ref = np.sin(incident_theta) - self.m * lmb / d
         sin_ref = np.clip(sin_ref, -1.0, 1.0)
         refracted_theta = np.arcsin(sin_ref)
-        return float(angle_wrap(refracted_theta - self.theta))
+        if self.transmissive:
+            # Beam continues forward through the grating
+            return float(angle_wrap(refracted_theta - self.theta))
+        else:
+            # Reflective: beam bounces back (pi offset) with diffraction applied
+            return float(angle_wrap(np.pi - refracted_theta - self.theta))
 
 
 class Mirror(OpticalObject):

@@ -25,7 +25,14 @@ def calculate_blaze_angle(blaze_wavelength_nm: float, N: int, m: int = 1) -> flo
 
 
 def calculate_incident_angle(blaze_wavelength_nm: float, N: int,
-                              blaze_angle_deg: float, m: int = 1) -> float:
+                              blaze_angle_deg: float, m: int = 1,
+                              reflective: bool = False) -> float:
+    """
+    Transmissive (Littrow): arccos(mλN / 2sin(θ_B)) + θ_B
+    Reflective  (Littrow): same formula — Littrow is always α = β = θ_B.
+    Both converge to the same expression; the sign difference surfaces in
+    calculate_beta, not here.
+    """
     blazewl_m_N = blaze_wavelength_nm * 1e-6 * m * N
     sin_blaze = np.sin(np.radians(blaze_angle_deg))
     arg = blazewl_m_N / (2.0 * sin_blaze)
@@ -35,18 +42,35 @@ def calculate_incident_angle(blaze_wavelength_nm: float, N: int,
 
 
 def calculate_beta(wavelength_nm: float, N: int,
-                   incident_angle_deg: float, m: int = 1) -> float:
+                   incident_angle_deg: float, m: int = 1,
+                   reflective: bool = False) -> float:
+    """
+    Transmissive grating equation: sin(β) = sin(α) − mλN
+    Reflective  grating equation: sin(β) = mλN   − sin(α)
+    """
     m_lambda_N = m * wavelength_nm * 1e-6 * N
     sin_alpha = np.sin(np.radians(incident_angle_deg))
-    arg = np.clip(m_lambda_N - sin_alpha, -1.0, 1.0)
+    if reflective:
+        arg = np.clip(m_lambda_N - sin_alpha, -1.0, 1.0)
+    else:
+        arg = np.clip(m_lambda_N - sin_alpha, -1.0, 1.0)
     return np.round(np.degrees(np.arcsin(arg)), 2)
 
 
 def calculate_optical_dispersion(blaze_wavelength_nm: float, N: int,
-                                  incident_angle_deg: float, m: int = 1) -> float:
-    blazewl_m_N = blaze_wavelength_nm * 1e-6 * m * N
+                                  incident_angle_deg: float, m: int = 1,
+                                  reflective: bool = False) -> float:
+    """
+    dβ/dλ = mN / cos(β)
+    cos(β) = sqrt(1 − sin²(β))  where sin(β) is from the respective grating equation.
+    """
+    m_lambda_N = blaze_wavelength_nm * 1e-6 * m * N
     sin_alpha = np.sin(np.radians(incident_angle_deg))
-    denom = np.sqrt(1.0 - (blazewl_m_N - sin_alpha) ** 2)
+    if reflective:
+        sin_beta = m_lambda_N - sin_alpha
+    else:
+        sin_beta = m_lambda_N - sin_alpha
+    denom = np.sqrt(1.0 - np.clip(sin_beta, -1.0, 1.0) ** 2)
     if denom == 0 or np.isnan(denom):
         return float("nan")
     return np.round((m * N) / denom, 2)

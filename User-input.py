@@ -5,6 +5,8 @@ from config import (
     DEFAULT_SPECTRAL_RES, DEFAULT_SPAN_START, DEFAULT_SPAN_END,
     SPECTRAL_RES_MIN, SPECTRAL_RES_MAX,
     WAVELENGTH_MIN, WAVELENGTH_MAX,
+    GRATING_TYPES, DEFAULT_GRATING_TYPE,
+    GRATING_TYPE_TRANSMISSIVE, GRATING_TYPE_REFLECTIVE,
 )
 
 st.set_page_config(page_title="Optics sim", page_icon="🔭")
@@ -28,11 +30,37 @@ if "page_0" not in st.session_state:
         "spectral_resolution": DEFAULT_SPECTRAL_RES,
         "span_start": DEFAULT_SPAN_START,
         "span_end": DEFAULT_SPAN_END,
+        "grating_type": DEFAULT_GRATING_TYPE,
     }
 
 user_input = st.container()
 
 with user_input:
+    st.subheader("Select Grating Type")
+    grating_type_options = GRATING_TYPES
+    grating_type_index = grating_type_options.index(
+        st.session_state.page_0["grating_type"])
+    selected_grating_type = st.radio(
+        label="_**Select the grating configuration**_",
+        options=grating_type_options,
+        index=grating_type_index,
+        horizontal=True,
+        help=(
+            "**Transmissive**: light passes through the grating (4f inline layout). "
+            "**Reflective**: light diffracts back from the grating surface "
+            "(Czerny-Turner style layout)."
+        ),
+    )
+    if selected_grating_type == GRATING_TYPE_REFLECTIVE:
+        st.info(
+            "Reflective grating selected. The simulation will use a "
+            "Czerny-Turner style folded layout where F2 and the sensor "
+            "are placed on the same side as the light source.",
+            icon="ℹ️",
+        )
+
+    st.space("medium")
+
     col1, col2 = st.columns([3, 2])
     with col1:
         st.subheader("Enter the spectral resolution and required Span")
@@ -97,5 +125,6 @@ with user_input:
             "spectral_resolution": st.session_state.spectral_resolution,
             "span_start": st.session_state.span_start,
             "span_end": st.session_state.span_end,
+            "grating_type": selected_grating_type,
         })
         st.switch_page("pages/1_Grating_specification.py")

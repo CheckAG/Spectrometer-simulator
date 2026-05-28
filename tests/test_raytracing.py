@@ -64,21 +64,31 @@ def test_lens_alias():
 
 # ── Grating ───────────────────────────────────────────────────────────────────
 
-def test_grating_satisfies_diffraction_equation():
-    N = 600        # grooves/mm
-    m = 1
-    lmb = 550e-9   # metres
+def test_grating_transmissive_satisfies_diffraction_equation():
+    N = 600
+    lmb = 550e-9
     alpha = np.radians(20)
-    grating = Grating(ngroves=N, aperture=50, pos=[0, 0], theta=0)
+    grating = Grating(ngroves=N, aperture=50, pos=[0, 0], theta=0, transmissive=True)
     ray = np.array([0.0, 0.0, alpha])
     dest = grating.propagate(ray, lmb=lmb)
     if not np.isnan(dest[2]):
         d = 1e-3 / N
-        expected_beta = np.arcsin(np.sin(alpha) - m * lmb / d)
+        expected_beta = np.arcsin(np.sin(alpha) - lmb / d)
         assert np.isclose(float(dest[2]), expected_beta, atol=1e-6)
 
+def test_grating_reflective_beam_goes_backward():
+    N = 600
+    lmb = 550e-9
+    alpha = np.radians(20)
+    grating = Grating(ngroves=N, aperture=50, pos=[0, 0], theta=0, transmissive=False)
+    ray = np.array([0.0, 0.0, alpha])
+    dest = grating.propagate(ray, lmb=lmb)
+    if not np.isnan(dest[2]):
+        # Reflective: global angle should be in the backward hemisphere (|angle| > π/2)
+        assert abs(float(dest[2])) > np.pi / 2
+
 def test_grating_blocks_out_of_aperture():
-    grating = Grating(ngroves=600, aperture=10, pos=[0, 0], theta=0)
+    grating = Grating(ngroves=600, aperture=10, pos=[0, 0], theta=0, transmissive=True)
     ray = np.array([0.0, 20.0, 0.0])
     dest = grating.propagate(ray, lmb=550e-9)
     assert np.isnan(dest[2])

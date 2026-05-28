@@ -12,6 +12,7 @@ from config import (
     INCIDENT_ANGLE_MIN, INCIDENT_ANGLE_MAX,
     LENS_APERTURE, GRATING_APERTURE,
     SIMULATION_OUTPUT_PATH,
+    GRATING_TYPE_REFLECTIVE,
 )
 from optics import (
     calculate_blaze_wavelength,
@@ -36,6 +37,8 @@ if "page_1" not in st.session_state or "N" not in st.session_state.page_1:
 span_start = st.session_state.page_0["span_start"]
 span_end = st.session_state.page_0["span_end"]
 spectral_resolution = st.session_state.page_0["spectral_resolution"]
+grating_type = st.session_state.page_0.get("grating_type", "Transmissive")
+reflective = grating_type == GRATING_TYPE_REFLECTIVE
 blaze_angle = st.session_state.page_1["blaze_angle"]
 N = st.session_state.page_1["N"]
 m = st.session_state.page_1["m"]
@@ -187,6 +190,7 @@ with user_input:
                 incident_angle=incident_angle,
                 difracted_angle=beta_middle,
                 N=N,
+                reflective=reflective,
                 lens_aperture=LENS_APERTURE,
                 grating_aperture=GRATING_APERTURE,
                 output_path=SIMULATION_OUTPUT_PATH,
@@ -202,10 +206,11 @@ with user_input:
     st.header("Final design values:")
 
     st.subheader("User input:")
-    a1, a2, a3 = st.columns(3)
+    a1, a2, a3, a4 = st.columns(4)
     a1.metric(label="Spectral Resolution (nm)", value=spectral_resolution)
     a2.metric(label="Minimum wavelength (nm)", value=span_start)
     a3.metric(label="Maximum wavelength (nm)", value=span_end)
+    a4.metric(label="Grating type", value=grating_type)
 
     st.subheader("Resolution:")
     r1, _, _ = st.columns(3)
