@@ -1,108 +1,76 @@
 #!/usr/bin/env python3
 
-import os, sys
-# sys.path.append('../modules/')
-import sys
-
+import os
 import numpy as np
-import matplotlib
-# matplotlib.use('Qt5Agg')
-import matplotlib.pyplot as plt
 
-from visualize import *
-from ray_utilities import *
-from raytracing_v import *
-import streamlit as st
+from visualize import Canvas, get_colors
+from ray_utilities import initial_rays
+from raytracing_v import Lens, Grating, Sensor, propagate_rays
+from config import (N_WAVELENGTH_SAMPLES, N_RAYS, N_SOURCE_POINTS,
+                    LENS_APERTURE, GRATING_APERTURE, SIMULATION_OUTPUT_PATH)
 
 
-def design_rendering(f1, f2, lens_aperture, grating_aperture, N, sensor_width,
-                     start_wavelength, end_wavelength, incident_angle, difracted_angle):
-    # Create a spectrometer using a simple 4f system and diffraction grating
-    f1 = f1              # Focal length of f1 lens
-    f2 = f2              # Focal length of f2 lens
-    lens_aperture = lens_aperture 
-    grating_aperture = grating_aperture
-    npoints = 2         # Number of light source points
-    nrays = 20           # Number of light rays per point
-    ymax = -0.1         # Limit of source plane. Controls spectral resolution
-    ymin = 0.1
-    ngroves = N       # Grove density of diffraction grating
-    sensor_width = sensor_width
+def design_rendering(f1, f2, sensor_width, start_wavelength, end_wavelength,
+                     incident_angle, difracted_angle, N,
+                     lens_aperture=LENS_APERTURE,
+                     grating_aperture=GRATING_APERTURE,
+                     output_path=SIMULATION_OUTPUT_PATH):
+    """
+    Run a 2-D ray-tracing simulation of a 4f spectrometer and save the result.
 
-    # Simulate system for these wavelengths
-    lmb = list(np.linspace(start_wavelength, end_wavelength, 10)*1e-9)
+    Parameters
+    ----------
+    f1, f2            : float  focal lengths in mm
+    sensor_width      : float  sensor width in mm
+    start_wavelength  : float  shortest wavelength in nm
+    end_wavelength    : float  longest wavelength in nm
+    incident_angle    : float  grating incidence angle in degrees
+    difracted_angle   : float  central diffracted angle in degrees
+    N                 : int    grooves per mm
+    lens_aperture     : float  lens clear aperture in mm
+    grating_aperture  : float  grating clear aperture in mm
+    output_path       : str    file path for the saved PNG
+    """
+    wavelengths = list(np.linspace(start_wavelength, end_wavelength,
+                                   N_WAVELENGTH_SAMPLES) * 1e-9)
+
+    ymin, ymax = 0.1, -0.1
+    scene = np.zeros((2, N_SOURCE_POINTS))
+    scene[1, :] = np.linspace(ymin, ymax, N_SOURCE_POINTS)
 
     components = []
-    rays = []
-    image_plane = -200
-    # nrays = 20
 
-    # Create three scene points
-    scene = np.zeros((2, npoints))
-    scene[1, :] = np.linspace(ymin, ymax, npoints)
+    components.append(Lens(f=f1, aperture=lens_aperture,
+                           pos=[f1, 0], theta=0, name="F1"))
 
-    # Place a collimation lens
-    components.append(Lens(f=f1,
-                              aperture=lens_aperture,
-                              pos=[f1, 0],
-                              theta=0,
-                              name='F1'))
+    components.append(Grating(ngroves=N, aperture=grating_aperture,
+                               pos=[2 * f1, 0],
+                               theta=np.radians(incident_angle),
+                               transmissive=False))
 
-    
-    # Place a diffraction grating
-    components.append(Grating(ngroves=ngroves,
-                                 aperture=grating_aperture,
-                                 pos=[2*f1, 0],
-                                 theta=np.deg2rad(incident_angle),
-                                 transmissive=False)
-                                 )
+    theta_design = np.radians(incident_angle + difracted_angle)
+    x1 = 2 * f1 + f2 * np.cos(-theta_design)
+    y1 = f2 * np.sin(-theta_design)
 
-    # Place a lens such that the central wavelength is centered on the sensor
-    # theta_design = np.arcsin(lmb[len(lmb)//2]/(1e-3/ngroves))
-    theta_design = np.deg2rad(incident_angle+difracted_angle)
-    print(f"theta design : {np.rad2deg(theta_design)}")
-    x1 = (2*f1) + f2*np.cos(-theta_design)
-    y1 = f2*np.sin(-theta_design)
+    components.append(Lens(f=f2, aperture=grating_aperture,
+                           pos=[x1, y1], theta=theta_design, name="F2"))
 
-    # components.append(Aperture(aperture=lens_aperture,
-    #                             pos=[x1,y1/2],
-    #                             theta=theta_design))
-
-    components.append(Lens(f=f2,
-                              aperture=grating_aperture,
-                              pos=[x1, y1],
-                              theta=(theta_design),
-                              name='F2'))
-
-    # Place a sensor
-    x2 = x1 + f2*np.cos(-theta_design)
-    y2 = y1 + f2*np.sin(-theta_design)
+    x2 = x1 + f2 * np.cos(-theta_design)
+    y2 = y1 + f2 * np.sin(-theta_design)
 
     components.append(Sensor(aperture=sensor_width,
-                                pos=[x2, y2],
-                                theta=(theta_design)))
+                              pos=[x2, y2], theta=theta_design))
 
-    # Get the initial rays
-    [rays, ptdict, colors] = initial_rays(scene,
-                                                        components[0],
-                                                        nrays)
-    # Create rainbow colors
-    colors = get_colors(len(lmb), nrays*npoints, cmap='rainbow')
-    
-    # Create a new canvas
-    canvas = Canvas([-5, 5*grating_aperture], [-f1*2, f1*2])
+    rays, _, _ = initial_rays(scene, components[0], N_RAYS)
+    colors = get_colors(len(wavelengths), N_RAYS * N_SOURCE_POINTS, cmap="rainbow")
 
-    # Draw the components
+    canvas = Canvas([-5, 5 * grating_aperture], [-f1 * 2, f1 * 2])
     canvas.draw_components(components)
 
-    # Draw the rays for each wavelength
-    for idx in range(len(lmb)):
-        canvas.draw_rays(propagate_rays(components, rays,
-                                           lmb=lmb[idx]), colors[idx],
-                        linewidth=0.2)
+    for idx, lmb in enumerate(wavelengths):
+        bundles = propagate_rays(components, rays, lmb=lmb)
+        canvas.draw_rays(bundles, colors[idx], linewidth=0.2)
 
-    # Show the system
-    # canvas.show()
-
-    # Save a copy
-    canvas.save('img/grating.png')
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    canvas.save(output_path)
+    canvas.close()

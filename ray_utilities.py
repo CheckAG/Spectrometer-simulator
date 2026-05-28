@@ -1,110 +1,85 @@
 #!/usr/bin/env python3
 
 import numpy as np
-import matplotlib.pyplot as plt
 
-# import raytracing as rt
-# import visualize as vis
 
 def initial_rays(scene, objective, nrays=10):
-    '''
-        Function to get an initial set of light rays for a given scene
-        configuration and objective lens
+    """
+    Generate a fan of rays from each scene point directed toward the objective lens.
 
-        Inputs:
-            scene: 2xN matrix of points
-            objective: Lens instance for objective lens
-            nrays: Number of rays per scene point
+    Parameters
+    ----------
+    scene     : (2, N) array of source point positions
+    objective : OpticalObject  the first optical element (sets the angular range)
+    nrays     : int  rays per scene point
 
-        Outputs:
-            rays: nrays.N list of rays
-            point_ray_dict: List with point to rays correspondence
-            colors: nrays.N list of colors
-    '''
+    Returns
+    -------
+    rays      : list of [x, y, angle] for every ray
+    ptdict    : list of index ranges, one per scene point
+    colors    : list of random RGBA tuples (one per ray)
+    """
     rays = []
     colors = []
-    point_ray_dict = []
+    ptdict = []
 
-    N = scene.shape[1]
-    x0 = objective.pos[0]
-    y0 = objective.pos[1]
+    n_points = scene.shape[1]
+    x0, y0 = objective.pos
     r = objective.aperture
-    theta = np.pi/2-objective.theta
+    theta = np.pi / 2 - objective.theta
 
-    # Compute extent of objective lens
-    x1 = x0 + 0.5*r*np.cos(theta)
-    y1 = y0 + 0.5*r*np.sin(theta)
+    x1 = x0 + 0.5 * r * np.cos(theta)
+    y1 = y0 + 0.5 * r * np.sin(theta)
+    x2 = x0 - 0.5 * r * np.cos(theta)
+    y2 = y0 - 0.5 * r * np.sin(theta)
 
-    x2 = x0 - 0.5*r*np.cos(theta)
-    y2 = y0 - 0.5*r*np.sin(theta)
-
-    # Now create rays for each scene point
-    for idx in range(N):
-        theta_min = np.arctan2(y1-scene[1, idx], x1-scene[0, idx])
-        theta_max = np.arctan2(y2-scene[1, idx], x2-scene[0, idx])
-
+    for idx in range(n_points):
+        theta_min = np.arctan2(y1 - scene[1, idx], x1 - scene[0, idx])
+        theta_max = np.arctan2(y2 - scene[1, idx], x2 - scene[0, idx])
         rays += ray_fan(scene[:, idx], [theta_min, theta_max], nrays)
-        colors += [tuple(np.random.rand(4))]*nrays
-        point_ray_dict.append(np.arange(idx*nrays, (idx+1)*nrays))
+        colors += [tuple(np.random.rand(4))] * nrays
+        ptdict.append(np.arange(idx * nrays, (idx + 1) * nrays))
 
-    return rays, point_ray_dict, colors
+    return rays, ptdict, colors
+
 
 def ray_fan(pos, theta_lim, nrays):
-    '''
-        Function to get a fan of rays from a point
+    """
+    Create a fan of rays from a single point.
 
-        Inputs:
-            orig: Origin of  the point
-            theta_lim: 2-tuple of angle limits in radians
-            nrays: Number of rays to generate
-
-        Output:
-            rays: List of rays in 3-tuple format: x-coordinte, y-coordinate and
-                  angle
-    '''
-    rays = []
+    Returns
+    -------
+    rays : list of [x, y, angle]
+    """
     angles = np.linspace(theta_lim[0], theta_lim[1], nrays)
+    return [[pos[0], pos[1], a] for a in angles]
 
-    for angle in angles:
-        rays.append([pos[0], pos[1], angle])
-
-    return rays
 
 def throughput(ray_bundles):
-    '''
-        Compute throughput of a system based on number of rays passing through
+    """
+    Fraction of rays that make it through the full system.
 
-        Inputs:
-            ray_bundles: List of rays. See raytracing.propagate_rays()
+    Parameters
+    ----------
+    ray_bundles : ndarray, shape (3, N_rays, N_components+1)
+    """
+    last_x = ray_bundles[0, :, -1]           # (N_rays,)
+    return float(np.sum(~np.isnan(last_x)) / last_x.size)
 
-        Output:
-            thp: Total fraction of light energy that goes through the system
-    '''
-    nrays = len(ray_bundles)
-    propagated = [~np.isnan(ray_bundles[idx][-1, -1]) for idx in range(nrays)]
-
-    return sum(propagated)/(1.0*nrays)
 
 def vignetting(ray_bundles, ptdict):
-    '''
-        Estimate vignetting by computing point wise throughput
+    """
+    Per-scene-point throughput estimate.
 
-        Inputs:
-            ray_bundles: List of rays. See raytracing.propagate_rays()
-            ptdict: List of indices of rays for each point
+    Parameters
+    ----------
+    ray_bundles : ndarray, shape (3, N_rays, N_components+1)
+    ptdict      : list of index arrays (one per scene point)
 
-        Outputs:
-            vign: List of throughputs per point
-    '''
-    # Compute throughput
-    nrays = len(ray_bundles)
-    propagated = [~np.isnan(ray_bundles[idx][-1, -1]) for idx in range(nrays)]
-    propagated = np.array(propagated)
-
-    vign = np.zeros(len(ptdict))
-
-    for idx in range(len(ptdict)):
-        pt_indices = propagated[list(ptdict[idx])]
-        vign[idx] = sum(pt_indices)/len(pt_indices)
-
+    Returns
+    -------
+    vign : ndarray of per-point throughput fractions
+    """
+    propagated = ~np.isnan(ray_bundles[0, :, -1])    # (N_rays,)
+    vign = np.array([propagated[idx].mean() for idx in ptdict])
     return vign

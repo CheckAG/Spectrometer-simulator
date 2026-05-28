@@ -1,105 +1,101 @@
 import streamlit as st
-import numpy as np
-import math
-import matplotlib.pyplot as plt
 from PIL import Image
-# from numericalunits import nm, mm, cm
-from streamlit.components.v1 import html
-from streamlit_extras.switch_page_button import switch_page
-from streamlit_extras.add_vertical_space import add_vertical_space
-from streamlit_extras.colored_header import colored_header
-import base64
 
-
-st.set_page_config(page_title="Optics sim", page_icon="🔭")
-st.session_state.update(st.session_state)
-st.title(":blue[Welcome to the Optics Simulator]")
-
-colored_header(
-    label="Guided way to design your spectrometer with ray tracing simulation",
-    description="A easy way to design your first spectrometer",
-    color_name="violet-70",
+from config import (
+    DEFAULT_SPECTRAL_RES, DEFAULT_SPAN_START, DEFAULT_SPAN_END,
+    SPECTRAL_RES_MIN, SPECTRAL_RES_MAX,
+    WAVELENGTH_MIN, WAVELENGTH_MAX,
 )
 
-with st.expander("**🎓 Click here to see how an spectrometer works:**"):
-    file_ = open("img/optics_work.gif", "rb")
-    contents = file_.read()
-    data_url = base64.b64encode(contents).decode("utf-8")
-    file_.close()
+st.set_page_config(page_title="Optics sim", page_icon="🔭")
+st.title(":blue[Welcome to the Optics Simulator]")
+st.subheader("Guided way to design your spectrometer with ray tracing simulation",
+             divider="violet")
+st.caption("A easy way to design your first spectrometer")
 
-    st.markdown(
-        f'<img src="data:image/gif;base64,{data_url}" alt="cat gif">',
-        unsafe_allow_html=True,
-    )
+with st.expander("**🎓 Click here to see how a spectrometer works:**"):
+    st.image("img/optics_work.gif")
 
 with st.sidebar:
-    st.subheader("Please input the Spectral resolution and Span according to your spectrometer design specification")
+    st.subheader("Please input the Spectral resolution and Span "
+                 "according to your spectrometer design specification")
 
-add_vertical_space(2)
+st.space("large")
+
+if "page_0" not in st.session_state:
+    st.session_state.page_0 = {
+        "continue_btn_state": True,
+        "spectral_resolution": DEFAULT_SPECTRAL_RES,
+        "span_start": DEFAULT_SPAN_START,
+        "span_end": DEFAULT_SPAN_END,
+    }
 
 user_input = st.container()
 
-if 'page_0' not in st.session_state:
-    st.session_state.page_0 = {
-        'spec_res_input': 1.0,
-        'span_start_input': 400.0,
-        'span_end_input': 400.0,
-        'continue_btn_state' : True
-    }
-
 with user_input:
-    col1, col2 = st.columns([3,2])
+    col1, col2 = st.columns([3, 2])
     with col1:
         st.subheader("Enter the spectral resolution and required Span")
-        spec_res_input = st.number_input(label="_**Enter Spectral resolution (in nanometers)**_",
-                        min_value=0.1,
-                        max_value=100.0,
-                        step=1.0,
-                        value=st.session_state.page_0['spec_res_input'],
-                        key='spectral_resolution',
-                        help="to get clarity on Spectral resolution refer to the image next to the input field by enlarging it")
+        st.number_input(
+            label="_**Enter Spectral resolution (in nanometers)**_",
+            min_value=SPECTRAL_RES_MIN,
+            max_value=SPECTRAL_RES_MAX,
+            step=1.0,
+            key="spectral_resolution",
+            value=st.session_state.page_0["spectral_resolution"],
+            help="Refer to the image for clarity on Spectral resolution",
+        )
         st.markdown("###### **Enter the start and end wavelength for required Span**")
-        span_start_input = st.number_input(label="_**Enter starting wavelength (nm)**_",
-                        min_value=100.0,
-                        max_value=2000.0,
-                        step=1.0,
-                        value=st.session_state.page_0['span_start_input'],
-                        key='span_start',
-                        help="to get clarity on Span refer to the image next to the input field by enlarging it")
-        span_end_input = st.number_input(label="_**Enter end wavelength (nm)**_",
-                        min_value=100.0,
-                        max_value=2000.0,
-                        step=1.0,
-                        value=st.session_state.page_0['span_end_input'],
-                        key='span_end',
-                        help="to get clarity on Span refer to the image next to the input field by enlarging it")
+        st.number_input(
+            label="_**Enter starting wavelength (nm)**_",
+            min_value=WAVELENGTH_MIN,
+            max_value=WAVELENGTH_MAX,
+            step=1.0,
+            key="span_start",
+            value=st.session_state.page_0["span_start"],
+            help="Refer to the image for clarity on Span",
+        )
+        st.number_input(
+            label="_**Enter end wavelength (nm)**_",
+            min_value=WAVELENGTH_MIN,
+            max_value=WAVELENGTH_MAX,
+            step=1.0,
+            key="span_end",
+            value=st.session_state.page_0["span_end"],
+            help="Refer to the image for clarity on Span",
+        )
     with col2:
-        image = Image.open('img/resolution_and_span_2.png')
-        st.image(image, "Spectral resolution and Span example")
-    
+        st.image(Image.open("img/resolution_and_span_2.png"),
+                 "Spectral resolution and Span example")
 
-    if span_start_input >= span_end_input:
-        st.error("Please make sure that end wavelength is grater than start wavelength",icon="🚨")
-        st.session_state.page_0['continue_btn_state'] = True
-    elif span_start_input*2 < span_end_input:
-        st.warning('Diffraction orders might overlap for the span selected. Might need order sorting filters. \
-                    Do you wish to continue?', icon="⚠️")
-        order_overlap_img = Image.open('img/order_overlap.png')
-        st.image(order_overlap_img, "Diffraction orders overlap")
-        st.session_state.page_0['continue_btn_state'] = False
+    span_start = st.session_state.span_start
+    span_end = st.session_state.span_end
+
+    if span_start >= span_end:
+        st.error("End wavelength must be greater than start wavelength.", icon="🚨")
+        st.session_state.page_0["continue_btn_state"] = True
+    elif span_start * 2 < span_end:
+        st.warning(
+            "Diffraction orders might overlap for the span selected. "
+            "Consider using order sorting filters. Do you wish to continue?",
+            icon="⚠️",
+        )
+        st.image(Image.open("img/order_overlap.png"), "Diffraction orders overlap")
+        st.session_state.page_0["continue_btn_state"] = False
     else:
-        st.success("Lets move to the next section, please click continue button", icon="✔️")
-        st.session_state.page_0['continue_btn_state'] = False
+        st.success("Ready — click Continue to proceed.", icon="✔️")
+        st.session_state.page_0["continue_btn_state"] = False
 
-    continue_btn = st.button("Continue", help="Click to sumbit and navigate to next page", disabled=st.session_state.page_0['continue_btn_state'])
+    continue_btn = st.button(
+        "Continue",
+        help="Click to submit and navigate to next page",
+        disabled=st.session_state.page_0["continue_btn_state"],
+    )
 
     if continue_btn:
-        st.session_state.page_0 = {
-            'spec_res_input': st.session_state.spectral_resolution,
-            'span_start_input': st.session_state.span_start,
-            'span_end_input': st.session_state.span_end
-        }
-        switch_page("Grating_specification")
-
-
-
+        st.session_state.page_0.update({
+            "spectral_resolution": st.session_state.spectral_resolution,
+            "span_start": st.session_state.span_start,
+            "span_end": st.session_state.span_end,
+        })
+        st.switch_page("pages/1_Grating_specification.py")
