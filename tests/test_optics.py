@@ -1,198 +1,125 @@
+import os
+import sys
+
 import numpy as np
 import pytest
-import sys, os
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from optics import (
-    calculate_blaze_wavelength,
-    calculate_optimal_N,
-    calculate_blaze_angle,
-    calculate_incident_angle,
-    calculate_beta,
-    calculate_optical_dispersion,
-    calculate_f2_prescribed,
-    calculate_sensor_width,
-    calculate_slit_width,
-    calculate_optical_resolution,
-    closest_value,
+    Spec, analyze, angular_dispersion, blaze_angle, default_blaze_wavelength,
+    diffraction_angle, grating_angles, recommend_groove_density,
 )
-from config import GROOVE_OPTIONS
 
 
-# ── closest_value ─────────────────────────────────────────────────────────────
-
-def test_closest_value_exact_match():
-    assert closest_value([300, 600, 1200], 600) == 600
-
-def test_closest_value_rounds_down():
-    assert closest_value(GROOVE_OPTIONS, 400) == 300
-
-def test_closest_value_rounds_up():
-    assert closest_value(GROOVE_OPTIONS, 500) == 600
+def spec(**kw):
+    base = dict(wl_min=400, wl_max=700, resolution=1.0, pixel_um=5.0, n_pixels=2048,
+                f1=50, f2=50)
+    return Spec(**{**base, **kw})
 
 
-# ── calculate_blaze_wavelength ────────────────────────────────────────────────
+# ── grating equation ──────────────────────────────────────────────────────────
 
-def test_blaze_wavelength_midpoint():
-    assert calculate_blaze_wavelength(400, 700) == 550.0
-
-def test_blaze_wavelength_symmetric():
-    assert calculate_blaze_wavelength(400, 600) == 500.0
-
-def test_blaze_wavelength_same():
-    assert calculate_blaze_wavelength(500, 500) == 500.0
+def test_diffraction_angle_satisfies_grating_equation():
+    beta = diffraction_angle(550, 600, 20, m=1)
+    assert np.isclose(550e-6 * 600, np.sin(np.radians(20)) + np.sin(np.radians(beta)))
 
 
-# ── calculate_optimal_N ───────────────────────────────────────────────────────
-
-def test_optimal_N_returns_from_groove_options():
-    N = calculate_optimal_N(550.0, 1.0)
-    assert N in GROOVE_OPTIONS
-
-def test_optimal_N_known_value():
-    # 550 / 1 = 550 → closest groove option is 600
-    assert calculate_optimal_N(550.0, 1.0) == 600
-
-def test_optimal_N_coarser_resolution():
-    # 550 / 10 = 55 → closest is 300
-    assert calculate_optimal_N(550.0, 10.0) == 300
+def test_diffraction_angle_vectorised_and_increasing():
+    betas = diffraction_angle([400, 550, 700], 600, 20)
+    assert betas.shape == (3,) and np.all(np.diff(betas) > 0)
 
 
-# ── calculate_blaze_angle ─────────────────────────────────────────────────────
-
-def test_blaze_angle_positive():
-    angle = calculate_blaze_angle(550.0, 600)
-    assert angle > 0
-
-def test_blaze_angle_returns_degrees():
-    angle = calculate_blaze_angle(550.0, 600)
-    assert 0 < angle < 90
-
-def test_blaze_angle_littrow_consistency():
-    # At Littrow: sin(theta_B) = m * lambda / (2 * d)
-    N = 600
-    lmb_nm = 550.0
-    m = 1
-    d_mm = 1.0 / N
-    expected = np.degrees(np.arcsin(m * lmb_nm * 1e-9 / (2 * d_mm * 1e-3)))
-    result = calculate_blaze_angle(lmb_nm, N, m)
-    assert np.isclose(result, expected, atol=0.01)
+def test_evanescent_order_is_nan():
+    assert np.isnan(diffraction_angle(1500, 2400, 0))
 
 
-# ── calculate_incident_angle ──────────────────────────────────────────────────
-
-def test_incident_angle_finite_for_valid_inputs():
-    angle = calculate_incident_angle(550.0, 600, 17.0)
-    assert np.isfinite(angle)
-
-def test_incident_angle_returns_nan_when_impossible():
-    # Very short wavelength and very high N makes arccos arg > 1
-    result = calculate_incident_angle(100.0, 2400, 5.0)
-    # May or may not be nan depending on exact values — just check it doesn't crash
-    assert isinstance(result, float)
-
-def test_incident_angle_positive():
-    angle = calculate_incident_angle(550.0, 600, 17.0)
-    if not np.isnan(angle):
-        assert angle >= 0
+def test_littrow_textbook_value():
+    # 1200 l/mm, 500 nm, first-order Littrow: α = β = 17.46°
+    alpha, beta = grating_angles(500, 1200, included_deg=0)
+    assert np.isclose(alpha, 17.46, atol=0.01) and np.isclose(alpha, beta)
 
 
-# ── calculate_beta ────────────────────────────────────────────────────────────
-
-def test_beta_at_zero_incidence_and_zero_order():
-    # m=1, N=600, lambda=550nm, alpha=0: beta = arcsin(0.33) ≈ 19.27°
-    beta = calculate_beta(550.0, 600, 0.0, m=1)
-    expected = np.degrees(np.arcsin(550e-6 * 600))
-    assert np.isclose(beta, expected, atol=0.01)
-
-def test_beta_increases_with_wavelength():
-    beta1 = calculate_beta(400.0, 600, 30.0)
-    beta2 = calculate_beta(700.0, 600, 30.0)
-    assert beta2 > beta1
-
-def test_beta_is_finite_for_valid_params():
-    beta = calculate_beta(550.0, 600, 20.0)
-    assert np.isfinite(beta)
+@pytest.mark.parametrize("included", [0, 15, 30, 60])
+def test_grating_angles_honour_included_angle(included):
+    alpha, beta = grating_angles(550, 600, included)
+    assert np.isclose(alpha - beta, included)
+    assert np.isclose(diffraction_angle(550, 600, alpha), beta)
 
 
-# ── calculate_optical_dispersion ──────────────────────────────────────────────
-
-def test_optical_dispersion_positive():
-    disp = calculate_optical_dispersion(550.0, 600, 30.0)
-    assert disp > 0
-
-def test_optical_dispersion_increases_with_N():
-    d300 = calculate_optical_dispersion(550.0, 300, 30.0)
-    d600 = calculate_optical_dispersion(550.0, 600, 30.0)
-    assert d600 > d300
-
-def test_optical_dispersion_finite():
-    disp = calculate_optical_dispersion(550.0, 600, 20.0)
-    assert np.isfinite(disp)
+def test_angular_dispersion_matches_numerical_derivative():
+    alpha = 20
+    h = 1e-3
+    num = np.radians(diffraction_angle(550 + h, 600, alpha)
+                     - diffraction_angle(550 - h, 600, alpha)) / (2 * h)
+    beta = diffraction_angle(550, 600, alpha)
+    assert np.isclose(angular_dispersion(600, beta), num, rtol=1e-6)
 
 
-# ── calculate_f2_prescribed ───────────────────────────────────────────────────
+# ── blaze ─────────────────────────────────────────────────────────────────────
 
-def test_f2_prescribed_positive():
-    disp = calculate_optical_dispersion(550.0, 600, 30.0)
-    f2 = calculate_f2_prescribed(5.0, disp, 1.0)
-    assert f2 > 0
-
-def test_f2_prescribed_larger_pixel_gives_larger_f2():
-    disp = calculate_optical_dispersion(550.0, 600, 30.0)
-    f2_small = calculate_f2_prescribed(5.0, disp, 1.0)
-    f2_large = calculate_f2_prescribed(10.0, disp, 1.0)
-    assert f2_large > f2_small
+def test_reflective_littrow_blaze_angle():
+    expected = np.degrees(np.arcsin(500e-6 * 1200 / 2))
+    assert np.isclose(blaze_angle(500, 1200, 0), expected)
 
 
-# ── calculate_sensor_width ────────────────────────────────────────────────────
-
-def test_sensor_width_positive():
-    width = calculate_sensor_width(50.0, -10.0, 10.0)
-    assert width > 0
-
-def test_sensor_width_zero_for_equal_betas():
-    width = calculate_sensor_width(50.0, 10.0, 10.0)
-    assert np.isclose(width, 0.0, atol=1e-9)
-
-def test_sensor_width_scales_with_f2():
-    w1 = calculate_sensor_width(50.0, -10.0, 10.0)
-    w2 = calculate_sensor_width(100.0, -10.0, 10.0)
-    assert np.isclose(w2, 2 * w1, atol=0.01)
+def test_transmissive_blaze_satisfies_facet_refraction():
+    n = 1.5
+    theta = np.radians(blaze_angle(500, 600, 0, transmissive=True, n_glass=n))
+    alpha, beta = grating_angles(500, 600, 0)
+    delta = np.radians(alpha + beta)
+    assert np.isclose(n * np.sin(theta), np.sin(theta + delta))
 
 
-# ── calculate_slit_width ──────────────────────────────────────────────────────
-
-def test_slit_width_positive():
-    width = calculate_slit_width(50.0, 50.0, 5.0)
-    assert width > 0
-
-def test_slit_width_scales_with_pixel_size():
-    w1 = calculate_slit_width(50.0, 50.0, 5.0)
-    w2 = calculate_slit_width(50.0, 50.0, 10.0)
-    assert np.isclose(w2, 2 * w1, atol=1e-6)
-
-def test_slit_width_f1_f2_ratio():
-    # slit_width = (f1 * 3 * pixel_um * 1e-3) / f2
-    result = calculate_slit_width(50.0, 100.0, 5.0)
-    expected = (50.0 * 3 * 5.0 * 1e-3) / 100.0
-    assert np.isclose(result, expected, atol=1e-6)
+def test_default_blaze_window_covers_visible_span():
+    wl_b = default_blaze_wavelength(400, 700)
+    assert 0.67 * wl_b <= 400 and 700 <= 1.8 * wl_b
 
 
-# ── calculate_optical_resolution ─────────────────────────────────────────────
+# ── analyze ───────────────────────────────────────────────────────────────────
 
-def test_optical_resolution_positive():
-    disp = calculate_optical_dispersion(550.0, 600, 30.0)
-    res = calculate_optical_resolution(50.0, 5.0, disp)
-    assert res > 0
+def test_resolution_scales_inversely_with_f2():
+    a, b = analyze(spec(f2=50), 600), analyze(spec(f2=100), 600)
+    assert np.isclose(a.resolution_image, 2 * b.resolution_image, rtol=0.01)
 
-def test_optical_resolution_improves_with_higher_dispersion():
-    disp_low = calculate_optical_dispersion(550.0, 300, 30.0)
-    disp_high = calculate_optical_dispersion(550.0, 1200, 30.0)
-    res_low = calculate_optical_resolution(50.0, 5.0, disp_low)
-    res_high = calculate_optical_resolution(50.0, 5.0, disp_high)
-    assert res_high < res_low   # higher dispersion → finer resolution (smaller nm value)
 
-def test_optical_resolution_nan_on_zero_dispersion():
-    result = calculate_optical_resolution(50.0, 5.0, 0.0)
-    assert np.isnan(result)
+def test_slit_image_matches_sampling_pixels():
+    d = analyze(spec(f1=50, f2=100, included_deg=0), 600)
+    # Symmetric layout: cos α / cos β = 1, so magnification = f2/f1 = 2
+    assert np.isclose(d.slit_um * 2, 3 * 5.0)
+
+
+def test_grating_limit_from_illuminated_grooves():
+    s = spec()
+    d = analyze(s, 600)
+    footprint = s.beam_mm / np.cos(np.radians(d.alpha))
+    assert np.isclose(d.resolution_grating, s.wl_center / (600 * footprint))
+
+
+def test_too_few_pixels_warns():
+    d = analyze(spec(resolution=0.1, n_pixels=512), 600)
+    assert any("pixels" in w for w in d.warnings)
+
+
+def test_order_overlap_warns():
+    d = analyze(spec(wl_min=400, wl_max=900), 300)
+    assert any("Second order" in w for w in d.warnings)
+
+
+def test_impossible_geometry_is_not_ok():
+    d = analyze(spec(wl_min=1000, wl_max=1900, included_deg=60), 2400)
+    assert not d.ok
+
+
+# ── recommend ─────────────────────────────────────────────────────────────────
+
+def test_recommendation_meets_target_and_fits_sensor():
+    s = spec()
+    d = recommend_groove_density(s)
+    assert d.resolution <= s.resolution and d.spectrum_mm <= s.sensor_mm
+
+
+def test_finer_target_needs_more_lines():
+    coarse = recommend_groove_density(spec(resolution=2.0))
+    fine = recommend_groove_density(spec(resolution=0.3, n_pixels=4096))
+    assert fine.G > coarse.G

@@ -127,4 +127,4 @@ with user_input:
             "span_end": st.session_state.span_end,
             "grating_type": selected_grating_type,
         })
-        st.switch_page("pages/1_Grating_specification.py")
+        st.switch_page("pages/1_Optics_and_detector.py")

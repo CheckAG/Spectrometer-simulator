@@ -1,103 +1,216 @@
+"""
+Spectrometer design physics.
+
+Conventions (used everywhere in this module)
+--------------------------------------------
+Grating equation (Palmer & Loewen, *Diffraction Grating Handbook*):
+
+    m·λ·G = sin α + sin β
+
+α = incidence angle, β = diffraction angle, both measured from the grating
+normal and positive when on the same side of it. The same equation holds for
+reflective and transmissive gratings; only the physical layout differs.
+
+Layout is fixed by the included angle 2K = α − β (0 = Littrow for reflective,
+symmetric/minimum-deviation for transmissive). For a centre wavelength:
+
+    sin φ = m·λ·G / (2·cos K),   α = φ + K,   β = φ − K
+
+Units at the API: wavelength nm, lengths mm, pixel size µm, angles degrees,
+groove density G lines/mm. Angles that cannot exist (|sin| > 1) come back NaN.
+
+The ray tracer (raytracing_v.py) measures β with the opposite sign
+(β_tracer = −β); tests/test_raytracing.py checks the two agree.
+"""
+
+from dataclasses import dataclass, field
+
 import numpy as np
-from config import GROOVE_OPTIONS
+
+from config import GROOVE_OPTIONS, GRATING_APERTURE, LENS_APERTURE
+
+NM_TO_MM = 1e-6
+UM_TO_MM = 1e-3
 
 
-def closest_value(input_list: list, input_value: float) -> int:
-    arr = np.asarray(input_list)
-    return arr[(np.abs(arr - input_value)).argmin()]
+def _asin_deg(x):
+    with np.errstate(invalid="ignore"):
+        return np.degrees(np.arcsin(x))
 
 
-def calculate_blaze_wavelength(span_start: float, span_end: float) -> float:
-    return (span_start + span_end) / 2.0
+def diffraction_angle(wl_nm, G, alpha_deg, m=1):
+    """β (deg) for incidence α. Vectorised over wl_nm."""
+    wl_nm = np.asarray(wl_nm, dtype=float)
+    return _asin_deg(m * wl_nm * NM_TO_MM * G - np.sin(np.radians(alpha_deg)))
 
 
-def calculate_optimal_N(blaze_wavelength_nm: float, spectral_resolution_nm: float,
-                         groove_options: list = GROOVE_OPTIONS) -> int:
-    raw = blaze_wavelength_nm / spectral_resolution_nm
-    return int(closest_value(groove_options, raw))
+def grating_angles(wl_nm, G, included_deg, m=1):
+    """(α, β) in deg that send wl_nm along a layout with included angle α − β."""
+    K = np.radians(included_deg) / 2
+    phi = _asin_deg(m * wl_nm * NM_TO_MM * G / (2 * np.cos(K)))
+    return phi + np.degrees(K), phi - np.degrees(K)
 
 
-def calculate_blaze_angle(blaze_wavelength_nm: float, N: int, m: int = 1) -> float:
-    d_mm = 1.0 / N
-    arg = (m * blaze_wavelength_nm * 1e-9) / (2.0 * d_mm * 1e-3)
-    arg = np.clip(arg, -1.0, 1.0)
-    return np.round(np.degrees(np.arcsin(arg)), 2)
+def angular_dispersion(G, beta_deg, m=1):
+    """dβ/dλ in rad/nm at fixed incidence."""
+    return m * G * NM_TO_MM / np.cos(np.radians(beta_deg))
 
 
-def calculate_incident_angle(blaze_wavelength_nm: float, N: int,
-                              blaze_angle_deg: float, m: int = 1,
-                              reflective: bool = False) -> float:
+def default_blaze_wavelength(wl_min, wl_max):
     """
-    Transmissive (Littrow): arccos(mλN / 2sin(θ_B)) + θ_B
-    Reflective  (Littrow): same formula — Littrow is always α = β = θ_B.
-    Both converge to the same expression; the sign difference surfaces in
-    calculate_beta, not here.
+    First-order rule of thumb: efficiency stays above ~50 % of peak over
+    0.67·λB … 1.8·λB. Pick λB at the geometric centre of the window that
+    covers the span.
     """
-    blazewl_m_N = blaze_wavelength_nm * 1e-6 * m * N
-    sin_blaze = np.sin(np.radians(blaze_angle_deg))
-    arg = blazewl_m_N / (2.0 * sin_blaze)
-    if np.abs(arg) > 1.0:
-        return float("nan")
-    return np.round(np.degrees(np.arccos(arg)) + blaze_angle_deg, 2)
+    # ponytail: rule-of-thumb window, replace with a real efficiency model later
+    return float(np.sqrt((wl_max / 1.8) * (wl_min / 0.67)))
 
 
-def calculate_beta(wavelength_nm: float, N: int,
-                   incident_angle_deg: float, m: int = 1,
-                   reflective: bool = False) -> float:
+def blaze_angle(wl_blaze_nm, G, included_deg, m=1, transmissive=False, n_glass=1.5):
+    """Facet angle (deg) that puts peak efficiency at wl_blaze_nm."""
+    alpha, beta = grating_angles(wl_blaze_nm, G, included_deg, m)
+    if not transmissive:
+        # Facet normal bisects incident and diffracted rays (specular off the facet).
+        return float((alpha + beta) / 2)
+    # Transmissive: the facet acts as a small prism that must bend the beam by
+    # δ = α + β, i.e. n·sin θB = sin(θB + δ).
+    # ponytail: assumes the ray inside the glass is ~normal to the flat face.
+    delta = np.radians(alpha + beta)
+    return float(np.degrees(np.arctan(np.sin(delta) / (n_glass - np.cos(delta)))))
+
+
+@dataclass
+class Spec:
+    """What the user wants plus the hardware they picked."""
+    wl_min: float                 # nm
+    wl_max: float                 # nm
+    resolution: float             # nm, target FWHM
+    pixel_um: float               # detector pixel pitch
+    n_pixels: int                 # detector pixel count
+    f1: float                     # collimator focal length, mm
+    f2: float                     # focusing focal length, mm
+    included_deg: float = 0.0     # α − β at the centre wavelength
+    transmissive: bool = True
+    m: int = 1
+    sampling: float = 3.0         # pixels per resolution element
+    beam_mm: float = LENS_APERTURE
+    grating_mm: float = GRATING_APERTURE
+    n_glass: float = 1.5          # transmissive grating substrate index
+    blaze_nm: float | None = None  # None → default_blaze_wavelength
+
+    @property
+    def wl_center(self):
+        return (self.wl_min + self.wl_max) / 2
+
+    @property
+    def sensor_mm(self):
+        return self.n_pixels * self.pixel_um * UM_TO_MM
+
+
+@dataclass
+class Design:
+    G: int
+    alpha: float              # deg
+    beta_center: float        # deg
+    beta_min: float           # deg, at wl_min
+    beta_max: float           # deg, at wl_max
+    blaze_nm: float
+    blaze_angle: float        # deg
+    dispersion: float         # rad/nm at centre
+    rld: float                # reciprocal linear dispersion, nm/mm
+    slit_um: float            # slit width whose image spans `sampling` pixels
+    spectrum_mm: float        # length of the span on a flat detector
+    resolution_image: float   # nm, slit image / pixel sampling limit
+    resolution_grating: float  # nm, λ / (m·N_illuminated)
+    resolution: float         # nm, combined
+    warnings: list = field(default_factory=list)
+
+    @property
+    def ok(self):
+        return np.isfinite(self.resolution)
+
+
+def analyze(spec: Spec, G: int) -> Design:
+    """Evaluate a spectrometer built from `spec` with a G lines/mm grating."""
+    m, f1, f2 = spec.m, spec.f1, spec.f2
+    warnings = []
+
+    alpha, beta_c = grating_angles(spec.wl_center, G, spec.included_deg, m)
+    beta_min, beta_max = diffraction_angle([spec.wl_min, spec.wl_max], G, alpha, m)
+
+    blaze_nm = spec.blaze_nm or default_blaze_wavelength(spec.wl_min, spec.wl_max)
+    theta_b = blaze_angle(blaze_nm, G, spec.included_deg, m, spec.transmissive, spec.n_glass)
+
+    D = angular_dispersion(G, beta_c, m)
+    rld = 1.0 / (f2 * D)
+
+    # Flat detector normal to the centre ray, one focal length behind F2.
+    x_min, x_max = f2 * np.tan(np.radians([beta_min - beta_c, beta_max - beta_c]))
+    spectrum_mm = float(abs(x_max - x_min))
+
+    # Slit imaged with magnification (f2/f1)·(cos α / cos β) (anamorphic term).
+    image_mm = spec.sampling * spec.pixel_um * UM_TO_MM
+    mag = (f2 / f1) * np.cos(np.radians(alpha)) / np.cos(np.radians(beta_c))
+    slit_um = image_mm / mag / UM_TO_MM
+
+    footprint = spec.beam_mm / np.cos(np.radians(alpha))
+    if footprint > spec.grating_mm:
+        warnings.append(f"Beam footprint on grating ({footprint:.1f} mm) exceeds grating "
+                        f"size ({spec.grating_mm} mm); light is clipped.")
+        footprint = spec.grating_mm
+
+    res_image = rld * image_mm
+    res_grating = spec.wl_center / (m * G * footprint)
+    resolution = float(np.hypot(res_image, res_grating))
+
+    if not np.all(np.isfinite([alpha, beta_min, beta_max])):
+        warnings.append(f"{G} lines/mm cannot diffract the full span at this included "
+                        f"angle (|sin β| > 1). Use fewer lines/mm or a smaller angle.")
+        resolution = float("nan")
+    if spec.n_pixels < spec.sampling * (spec.wl_max - spec.wl_min) / spec.resolution:
+        need = int(np.ceil(spec.sampling * (spec.wl_max - spec.wl_min) / spec.resolution))
+        warnings.append(f"Detector has {spec.n_pixels} pixels but the span at the target "
+                        f"resolution needs ≥ {need} (at {spec.sampling:g} px per resolution "
+                        f"element). No grating fixes this; widen the target or use a longer sensor.")
+    if spectrum_mm > spec.sensor_mm:
+        # Spectrum length scales linearly with f2 (x = f2·tan Δβ).
+        fit = spec.sensor_mm / spectrum_mm
+        warnings.append(f"Spectrum is {spectrum_mm:.1f} mm long but the sensor is only "
+                        f"{spec.sensor_mm:.1f} mm; the ends of the span fall off. To fit: "
+                        f"f2 ≤ {f2 * fit:.0f} mm, or a sensor ≥ {spectrum_mm:.1f} mm, or a "
+                        f"span of ~{(spec.wl_max - spec.wl_min) * fit:.0f} nm.")
+    if resolution > spec.resolution:
+        warnings.append(f"Achieved resolution {resolution:.3g} nm is worse than the "
+                        f"{spec.resolution:g} nm target.")
+    if 2 * spec.wl_min < spec.wl_max:
+        warnings.append(f"Second order of {spec.wl_min:g} nm lands on {2 * spec.wl_min:g} nm; "
+                        f"an order-sorting (long-pass) filter is needed.")
+    if spec.wl_min < 0.67 * blaze_nm or spec.wl_max > 1.8 * blaze_nm:
+        warnings.append(f"Span extends beyond the efficient range of a {blaze_nm:.0f} nm "
+                        f"blaze (≈{0.67 * blaze_nm:.0f}–{1.8 * blaze_nm:.0f} nm).")
+
+    return Design(
+        G=G, alpha=float(alpha), beta_center=float(beta_c),
+        beta_min=float(beta_min), beta_max=float(beta_max),
+        blaze_nm=blaze_nm, blaze_angle=theta_b,
+        dispersion=float(D), rld=float(rld), slit_um=float(slit_um),
+        spectrum_mm=spectrum_mm,
+        resolution_image=float(res_image), resolution_grating=float(res_grating),
+        resolution=resolution, warnings=warnings,
+    )
+
+
+def recommend_groove_density(spec: Spec, options=GROOVE_OPTIONS) -> Design:
     """
-    Transmissive grating equation: sin(β) = sin(α) − mλN
-    Reflective  grating equation: sin(β) = mλN   − sin(α)
+    Lowest stock groove density that meets the target resolution and fits the
+    span on the sensor. Lower G = smaller angles, wider coverage, cheaper.
+    Falls back to the best-resolving design that still fits, then to any valid one.
     """
-    m_lambda_N = m * wavelength_nm * 1e-6 * N
-    sin_alpha = np.sin(np.radians(incident_angle_deg))
-    if reflective:
-        arg = np.clip(m_lambda_N - sin_alpha, -1.0, 1.0)
-    else:
-        arg = np.clip(m_lambda_N - sin_alpha, -1.0, 1.0)
-    return np.round(np.degrees(np.arcsin(arg)), 2)
-
-
-def calculate_optical_dispersion(blaze_wavelength_nm: float, N: int,
-                                  incident_angle_deg: float, m: int = 1,
-                                  reflective: bool = False) -> float:
-    """
-    dβ/dλ = mN / cos(β)
-    cos(β) = sqrt(1 − sin²(β))  where sin(β) is from the respective grating equation.
-    """
-    m_lambda_N = blaze_wavelength_nm * 1e-6 * m * N
-    sin_alpha = np.sin(np.radians(incident_angle_deg))
-    if reflective:
-        sin_beta = m_lambda_N - sin_alpha
-    else:
-        sin_beta = m_lambda_N - sin_alpha
-    denom = np.sqrt(1.0 - np.clip(sin_beta, -1.0, 1.0) ** 2)
-    if denom == 0 or np.isnan(denom):
-        return float("nan")
-    return np.round((m * N) / denom, 2)
-
-
-def calculate_f2_prescribed(pixel_size_um: float, optical_dispersion: float,
-                             spectral_resolution_nm: float) -> float:
-    numerator = 1.5 * pixel_size_um * 1e-3
-    denominator = np.tan(optical_dispersion * spectral_resolution_nm * 1e-6) / 2.0
-    if denominator == 0 or np.isnan(denominator):
-        return float("nan")
-    return np.round(numerator / denominator, 2)
-
-
-def calculate_sensor_width(f2_mm: float, beta_min_deg: float,
-                            beta_max_deg: float) -> float:
-    span_rad = np.radians(beta_max_deg - beta_min_deg)
-    return np.round(2.0 * f2_mm * np.tan(span_rad / 2.0), 2)
-
-
-def calculate_slit_width(f1_mm: float, f2_mm: float, pixel_size_um: float) -> float:
-    return np.round((f1_mm * 3.0 * pixel_size_um * 1e-3) / f2_mm, 5)
-
-
-def calculate_optical_resolution(f2_mm: float, pixel_size_um: float,
-                                  optical_dispersion: float) -> float:
-    if optical_dispersion == 0 or np.isnan(optical_dispersion):
-        return float("nan")
-    angle = np.arctan(1.5 * pixel_size_um * 1e-6 / f2_mm)
-    return np.round((2.0 * angle / optical_dispersion) * 1e9, 4)
+    designs = [analyze(spec, G) for G in sorted(options)]
+    valid = [d for d in designs if d.ok]
+    fits = [d for d in valid if d.spectrum_mm <= spec.sensor_mm]
+    meets = [d for d in fits if d.resolution <= spec.resolution]
+    if meets:
+        return meets[0]
+    pool = fits or valid or designs
+    return min(pool, key=lambda d: d.resolution if d.ok else np.inf)

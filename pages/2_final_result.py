@@ -1,244 +1,89 @@
-import os
-import streamlit as st
 import numpy as np
+import streamlit as st
 from PIL import Image
-
 from streamlit_extras.metric_cards import style_metric_cards
+
+from config import GROOVE_OPTIONS, DIFFRACTION_ORDER, GRATING_TYPE_TRANSMISSIVE
 from grating import design_rendering
-from config import (
-    DEFAULT_PIXEL_SIZE, DEFAULT_F1, DEFAULT_F2,
-    PIXEL_SIZE_MIN, PIXEL_SIZE_MAX,
-    FOCAL_LENGTH_MIN, FOCAL_LENGTH_MAX,
-    INCIDENT_ANGLE_MIN, INCIDENT_ANGLE_MAX,
-    LENS_APERTURE, GRATING_APERTURE,
-    SIMULATION_OUTPUT_PATH,
-    GRATING_TYPE_REFLECTIVE,
-)
-from optics import (
-    calculate_blaze_wavelength,
-    calculate_incident_angle,
-    calculate_beta,
-    calculate_optical_dispersion,
-    calculate_f2_prescribed,
-    calculate_sensor_width,
-    calculate_slit_width,
-    calculate_optical_resolution,
-)
+from optics import Spec, analyze, recommend_groove_density
 
-# ── Guard: require prior pages to be complete ────────────────────────────────
-if "page_0" not in st.session_state or "span_start" not in st.session_state.page_0:
-    st.warning("Please complete the first page before continuing.")
-    st.switch_page("User-input.py")
-if "page_1" not in st.session_state or "N" not in st.session_state.page_1:
-    st.warning("Please complete the grating specification page before continuing.")
+if "page_1" not in st.session_state or "page_0" not in st.session_state:
+    st.warning("Please complete the previous pages before continuing.")
     st.switch_page("User-input.py")
 
-# ── Restore persisted values from all prior pages ────────────────────────────
-span_start = st.session_state.page_0["span_start"]
-span_end = st.session_state.page_0["span_end"]
-spectral_resolution = st.session_state.page_0["spectral_resolution"]
-grating_type = st.session_state.page_0.get("grating_type", "Transmissive")
-reflective = grating_type == GRATING_TYPE_REFLECTIVE
-blaze_angle = st.session_state.page_1["blaze_angle"]
-N = st.session_state.page_1["N"]
-m = st.session_state.page_1["m"]
-blaze_wavelength = calculate_blaze_wavelength(span_start, span_end)
+p0, p1 = st.session_state.page_0, st.session_state.page_1
+spec = Spec(
+    wl_min=p0["span_start"], wl_max=p0["span_end"], resolution=p0["spectral_resolution"],
+    pixel_um=p1["pixel_um"], n_pixels=p1["n_pixels"], sampling=p1["sampling"],
+    f1=p1["f1"], f2=p1["f2"], included_deg=p1["included_deg"],
+    transmissive=p0["grating_type"] == GRATING_TYPE_TRANSMISSIVE, m=DIFFRACTION_ORDER,
+)
 
-# Write back so the rest of this page can read them from session_state if needed
-st.session_state.update({
-    "span_start": span_start,
-    "span_end": span_end,
-    "spectral_resolution": spectral_resolution,
-    "blaze_angle": blaze_angle,
-    "N": N,
-    "m": m,
-    "blaze_wavelength": blaze_wavelength,
-})
+st.title(":blue[Design result]")
 
-# ── page_2 persistence dict (widget defaults) ────────────────────────────────
-if "page_2" not in st.session_state:
-    st.session_state.page_2 = {
-        "pixel_size": DEFAULT_PIXEL_SIZE,
-        "f1": DEFAULT_F1,
-        "f2": DEFAULT_F2,
-    }
+recommended = recommend_groove_density(spec)
+G = st.selectbox("Grating groove density (lines/mm)", GROOVE_OPTIONS,
+                 index=GROOVE_OPTIONS.index(recommended.G),
+                 help=f"Recommended: {recommended.G} — the lowest stock density that "
+                      f"meets the target and fits the sensor.")
+d = analyze(spec, G)
 
-# ── Pre-calculate incident angle ─────────────────────────────────────────────
-incident_angle_calculated = calculate_incident_angle(
-    blaze_wavelength, N, blaze_angle, m)
+for w in d.warnings:
+    st.warning(w, icon="⚠️")
+if not d.warnings:
+    st.success("Design meets the target.", icon="✔️")
 
-# ─────────────────────────────────────────────────────────────────────────────
-st.title(":blue[Angle, Line array & Lens Specification:]")
-st.space("xlarge")
-
-with st.sidebar:
-    st.subheader("Incident angle, Refracted angle and Blaze angles")
-    st.subheader("Line array Detector specifications")
-    st.subheader("Lens focal length specification")
-
-user_input = st.container()
-
-with user_input:
-
-    # ── Incident angle ────────────────────────────────────────────────────────
-    if np.isnan(incident_angle_calculated):
-        st.error("Calculated incident angle exceeds 90°. Please set it manually.")
-        st.slider(
-            label="_**Please change the incident angle here (in degrees)**_",
-            min_value=INCIDENT_ANGLE_MIN,
-            max_value=INCIDENT_ANGLE_MAX,
-            value=st.session_state.page_2.get("incident_angle", 0),
-            key="incident_angle",
-            step=1,
-        )
-    else:
-        st.info(
-            f"With the selected Spectral resolution, Span, and N value, "
-            f"the calculated incident angle is _{incident_angle_calculated}°_. "
-            f"Change below if needed.",
-            icon="ℹ️",
-        )
-        st.slider(
-            label="_**Please change the incident angle here (in degrees)**_",
-            min_value=INCIDENT_ANGLE_MIN,
-            max_value=INCIDENT_ANGLE_MAX,
-            value=st.session_state.page_2.get(
-                "incident_angle", int(incident_angle_calculated)),
-            key="incident_angle",
-            step=1,
-        )
-
-    incident_angle = st.session_state.incident_angle
-
-    beta_min = calculate_beta(span_start, N, incident_angle, m)
-    beta_max = calculate_beta(span_end, N, incident_angle, m)
-    beta_middle = (beta_min + beta_max) / 2.0
-
-    with st.expander("Dispersion span of the system:"):
-        st.markdown(f"###### Beta minimum = {beta_min}°")
-        st.markdown(f"###### Beta maximum = {beta_max}°")
-
-    st.space("medium")
-
-    # ── Pixel size ────────────────────────────────────────────────────────────
-    st.number_input(
-        label="_**Pixel size of the detector (µm)**_",
-        min_value=PIXEL_SIZE_MIN,
-        max_value=PIXEL_SIZE_MAX,
-        value=st.session_state.page_2["pixel_size"],
-        key="pixel_size",
-        step=1.0,
-    )
-    pixel_size = st.session_state.pixel_size
-
-    optical_dispersion = calculate_optical_dispersion(
-        blaze_wavelength, N, incident_angle, m)
-    f2_prescribed = calculate_f2_prescribed(
-        pixel_size, optical_dispersion, spectral_resolution)
-
-    st.info(f"Prescribed value of f2: {f2_prescribed} mm", icon="ℹ️")
-
-    st.space("large")
-    st.subheader("Change the value of F1 and F2 if you wish to")
-
-    col1, col2 = st.columns(2)
-    with col2:
-        st.number_input(
-            label="_**Set the value of f2 (mm)**_",
-            min_value=FOCAL_LENGTH_MIN,
-            max_value=FOCAL_LENGTH_MAX,
-            key="f2",
-            value=st.session_state.page_2["f2"],
-        )
-    with col1:
-        st.number_input(
-            label="_**Set the value of f1 (mm)**_",
-            min_value=FOCAL_LENGTH_MIN,
-            max_value=FOCAL_LENGTH_MAX,
-            key="f1",
-            value=st.session_state.page_2["f1"],
-        )
-
-    f1 = st.session_state.f1
-    f2 = st.session_state.f2
-
-    # Save widget values for next re-run
-    st.session_state.page_2.update({
-        "pixel_size": pixel_size,
-        "f1": f1,
-        "f2": f2,
-        "incident_angle": incident_angle,
-    })
-
-    sensor_width = calculate_sensor_width(f2, beta_min, beta_max)
-    slit_width = calculate_slit_width(f1, f2, pixel_size)
-    optical_resolution = calculate_optical_resolution(f2, pixel_size, optical_dispersion)
-
-    st.space("large")
-
-    # ── Ray tracing simulation ────────────────────────────────────────────────
-    st.header("Ray tracing simulation:")
-
+st.header("Ray tracing simulation")
+if d.ok:
     with st.spinner("Simulation running..."):
         try:
-            design_rendering(
-                f1=f1,
-                f2=f2,
-                sensor_width=sensor_width,
-                start_wavelength=span_start,
-                end_wavelength=span_end,
-                incident_angle=incident_angle,
-                difracted_angle=beta_middle,
-                N=N,
-                reflective=reflective,
-                lens_aperture=LENS_APERTURE,
-                grating_aperture=GRATING_APERTURE,
-                output_path=SIMULATION_OUTPUT_PATH,
-            )
-            if os.path.exists(SIMULATION_OUTPUT_PATH):
-                st.image(Image.open(SIMULATION_OUTPUT_PATH))
+            st.image(design_rendering(spec, d))
         except Exception as e:
             st.error(f"Simulation failed: {e}")
+else:
+    st.error("No valid geometry for this grating — nothing to trace.")
 
-    st.space("large")
 
-    # ── Final design values ───────────────────────────────────────────────────
-    st.header("Final design values:")
+def r(x, n=2):
+    return "—" if not np.isfinite(x) else round(float(x), n)
 
-    st.subheader("User input:")
-    a1, a2, a3, a4 = st.columns(4)
-    a1.metric(label="Spectral Resolution (nm)", value=spectral_resolution)
-    a2.metric(label="Minimum wavelength (nm)", value=span_start)
-    a3.metric(label="Maximum wavelength (nm)", value=span_end)
-    a4.metric(label="Grating type", value=grating_type)
 
-    st.subheader("Resolution:")
-    r1, _, _ = st.columns(3)
-    r1.metric(label="Resolution achieved (nm)", value=optical_resolution)
+st.header("Design values")
+st.subheader("Resolution")
+c = st.columns(4)
+c[0].metric("Target (nm)", spec.resolution)
+c[1].metric("Achieved (nm)", r(d.resolution, 3))
+c[2].metric("Slit / pixel limit (nm)", r(d.resolution_image, 3))
+c[3].metric("Grating limit (nm)", r(d.resolution_grating, 3))
 
-    st.subheader("Grating specification:")
-    b1, b2, _ = st.columns(3)
-    b1.metric(label="Grooves per mm", value=N)
-    b2.metric(label="Blaze angle", value=f"{blaze_angle}°")
+st.subheader("Grating")
+c = st.columns(4)
+c[0].metric("Lines/mm", G)
+c[1].metric("Blaze wavelength (nm)", r(d.blaze_nm, 0))
+c[2].metric("Blaze angle", f"{r(d.blaze_angle)}°")
+c[3].metric("Type", p0["grating_type"])
 
-    st.subheader("Optical specification:")
-    c1, c2, c3 = st.columns(3)
-    c1.metric(label="Incident angle", value=f"{incident_angle}°")
-    c2.metric(label="Minimum diffracted angle", value=f"{beta_min}°")
-    c3.metric(label="Maximum diffracted angle", value=f"{beta_max}°")
+st.subheader("Angles")
+c = st.columns(4)
+c[0].metric("Incidence α", f"{r(d.alpha)}°")
+c[1].metric("β centre", f"{r(d.beta_center)}°")
+c[2].metric(f"β at {spec.wl_min:g} nm", f"{r(d.beta_min)}°")
+c[3].metric(f"β at {spec.wl_max:g} nm", f"{r(d.beta_max)}°")
 
-    d1, d2, d3 = st.columns(3)
-    d1.metric(label="F1 (mm)", value=np.round(f1, 2))
-    d2.metric(label="F2 (mm)", value=f2)
-    d3.metric(label="Slit width (mm)", value=slit_width)
+st.subheader("Optics & detector")
+c = st.columns(4)
+c[0].metric("Slit width (µm)", r(d.slit_um, 1))
+c[1].metric("Dispersion (nm/mm)", r(d.rld))
+c[2].metric("Spectrum length (mm)", r(d.spectrum_mm))
+c[3].metric("Sensor length (mm)", r(spec.sensor_mm))
 
-    st.subheader("Detector specification:")
-    e1, e2, _ = st.columns(3)
-    e1.metric(label="Pixel size (µm)", value=pixel_size)
-    e2.metric(label="Sensor width (mm)", value=sensor_width)
-
-    style_metric_cards(
-        background_color="#262730",
-        border_color="#3D3D3D",
-        border_left_color="#9AD8E1",
+with st.expander("**🎓 Know more about blaze angle:**"):
+    st.image(Image.open("img/Blazed_grating.png"), "Grating representation")
+    st.markdown(
+        "A blazed grating has sawtooth grooves tilted at the blaze angle θB. "
+        "Efficiency peaks at the blaze wavelength and stays useful from roughly "
+        "0.67·λB to 1.8·λB in first order, so λB is chosen to centre the span in that window."
     )
+
+style_metric_cards(background_color="#262730", border_color="#3D3D3D",
+                   border_left_color="#9AD8E1")
