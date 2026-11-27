@@ -4,7 +4,7 @@ Design a grating spectrometer before buying parts. Enter the wavelength range,
 target resolution and detector; the app picks a grating, sizes the slit,
 checks the design against the sensor and ray-traces it — all live, on one page.
 
-**Live app:** [checkag-spectrometer-simulator.streamlit.app](https://checkag-spectrometer-simulator.streamlit.app/)
+**Live app:** [checkag-spectrometer-simulator.streamlit.app](https://checkag-spectrsl-simulator.streamlit.app/)
 
 ![Spectrometer Designer, 4f transmissive layout](img/app.png)
 
