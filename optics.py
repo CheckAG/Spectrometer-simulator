@@ -27,7 +27,8 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from config import GROOVE_OPTIONS, GRATING_APERTURE, LENS_APERTURE, AUTO_ANGLE_MARGIN
+from config import (GROOVE_OPTIONS, GRATING_APERTURE, LENS_APERTURE, AUTO_ANGLE_MARGIN,
+                    FOCAL_LENGTH_MAX)
 
 NM_TO_MM = 1e-6
 UM_TO_MM = 1e-3
@@ -128,6 +129,7 @@ class Spec:
     grating_mm: float = GRATING_APERTURE
     n_glass: float = 1.5          # transmissive grating substrate index
     blaze_nm: float | None = None  # None → default_blaze_wavelength
+    exact_mirrors: bool = False   # Czerny–Turner: add traced mirror aberrations to the resolution
 
     @property
     def wl_center(self):
@@ -156,9 +158,12 @@ class Design:
     fold2: float              # M2 off-axis angle = detector tilt to the chief ray, deg
     resolution_image: float   # nm, slit image / pixel sampling limit
     resolution_grating: float  # nm, λ / (m·N_illuminated)
-    resolution: float         # nm, combined
+    resolution: float         # nm, combined (includes aberrations when traced)
     warnings: list = field(default_factory=list)
     mirrors_clear: bool = True  # Czerny–Turner: M1 and M2 don't overlap
+    resolution_aberration: float = 0.0  # nm, worst traced mirror blur (0 = ideal optics)
+    aberration_wl: tuple = ()   # nm, wavelengths the blur was traced at
+    aberration_nm: tuple = ()   # nm, blur at each of them
 
     @property
     def ok(self):
@@ -175,6 +180,7 @@ def auto_included_angle(spec: Spec, G: int, margin=AUTO_ANGLE_MARGIN) -> float:
     """
     if spec.transmissive:
         return 0.0
+    spec = replace(spec, exact_mirrors=False)     # clearance is geometric; skip tracing
     for angle in range(0, 91):
         d = analyze(replace(spec, included_deg=float(angle)), G, fixes=False)
         if d.ok and d.mirrors_clear:
@@ -191,11 +197,27 @@ def _walk_until_fits(spec, G, overrides, start, step, max_steps=400):
     """
     value = start
     for _ in range(max_steps):
-        s = replace(spec, **overrides(value))
+        if value <= 0:                             # lengths, spans and pixel counts stay positive
+            return None
+        s = replace(spec, exact_mirrors=False, **overrides(value))   # length is analytic
         d = analyze(s, G, fixes=False)
         if d.ok and d.spectrum_mm <= s.sensor_mm:
             return value
         value += step
+    return None
+
+
+def _walk_until_resolves(spec, G, overrides, values, fit=False):
+    """
+    First of `values` at which the traced resolution meets the target once
+    `overrides(value)` is applied (and, with fit=True, the spectrum also fits
+    the sensor). None if none does.
+    """
+    for v in values:
+        s = replace(spec, **overrides(v))
+        d = analyze(s, G, fixes=False)
+        if d.ok and d.resolution <= s.resolution and (not fit or d.spectrum_mm <= s.sensor_mm):
+            return v
     return None
 
 
@@ -204,6 +226,7 @@ def analyze(spec: Spec, G: int, fixes: bool = True) -> Design:
     Evaluate a spectrometer built from `spec` with a G lines/mm grating.
     fixes=False skips searching for one-click remedies (used for nested calls).
     """
+    asked = spec                                   # before the angle is filled in, for fixes
     if spec.included_deg is None:
         spec = replace(spec, included_deg=auto_included_angle(spec, G))
     m, f1, f2 = spec.m, spec.f1, spec.f2
@@ -249,11 +272,55 @@ def analyze(spec: Spec, G: int, fixes: bool = True) -> Design:
     res_grating = spec.wl_center / (m * G * footprint)
     resolution = float(np.hypot(res_image, res_grating))
 
-    if not np.all(np.isfinite([alpha, beta_min, beta_max])):
+    with np.errstate(invalid="ignore"):            # |angle| ≥ 90°: light would graze or come from behind
+        impossible = not np.all(np.abs([alpha, beta_min, beta_max]) < 90)
+    if impossible:
         warnings.append(Issue(f"{G} lines/mm cannot diffract the full span at this included "
-                              f"angle (|sin β| > 1). Use fewer lines/mm or a smaller angle.",
+                              f"angle (an angle reaches 90°). Use fewer lines/mm or a smaller angle.",
                               "included_deg", {"Use computed angle": {"included_deg": None}}))
         resolution = float("nan")
+
+    common = dict(
+        G=G, included_deg=spec.included_deg, alpha=float(alpha), beta_center=float(beta_c),
+        beta_min=float(beta_min), beta_max=float(beta_max),
+        blaze_nm=blaze_nm, blaze_angle=theta_b,
+        dispersion=float(D), rld=float(rld), slit_um=float(slit_um),
+        spectrum_mm=spectrum_mm, fold1=fold1, fold2=fold2,
+        resolution_image=float(res_image), resolution_grating=float(res_grating))
+    aberration = {}
+    if spec.exact_mirrors and not spec.transmissive and np.isfinite(resolution):
+        from grating import aberration_blur        # grating imports this module
+        wl, blur = aberration_blur(spec, Design(**common, resolution=resolution))
+        # No traced light at the sensor (NaN) → the design is not usable.
+        ideal, worst = resolution, float(np.max(blur))
+        resolution = float(np.hypot(ideal, worst))
+        aberration = dict(resolution_aberration=worst, aberration_wl=tuple(map(float, wl)),
+                          aberration_nm=tuple(map(float, blur)))
+        if np.isnan(worst):
+            warnings.append(Issue("With exact mirrors part of the beam is clipped before the "
+                                  "sensor, so no resolution can be traced. Try fewer lines/mm "
+                                  "or the computed angle.", "included_deg"))
+        elif resolution > spec.resolution and ideal <= spec.resolution:
+            remedies = {}
+            if fixes:
+                # Equal mirrors keep the Czerny–Turner coma cancellation; prefer a
+                # length that also fits the sensor. A narrower beam (slower mirrors)
+                # works at any length.
+                lengths = np.arange(np.ceil(max(f1, f2) / 10) * 10, FOCAL_LENGTH_MAX + 1, 10.0)
+                same = lambda v: {"f1": float(v), "f2": float(v)}
+                f = (_walk_until_resolves(asked, G, same, lengths, fit=True)
+                     or _walk_until_resolves(asked, G, same, lengths))
+                beam = _walk_until_resolves(asked, G, lambda v: {"beam_mm": float(v)},
+                                            np.arange(np.floor(spec.beam_mm) - 1, 2, -1.0))
+                if f:
+                    remedies[f"f1 = f2 = {f:g} mm"] = same(f)
+                if beam:
+                    remedies[f"Beam {beam:g} mm"] = {"beam_mm": float(beam)}
+            warnings.append(Issue(
+                f"Mirror aberrations add up to {worst:.2f} nm of blur, so the resolution is "
+                f"{resolution:.3g} nm instead of {ideal:.3g} nm. Fast, strongly folded mirrors "
+                f"cause it: longer equal focal lengths or a narrower beam reduce it.", "f2",
+                remedies))
     if spec.n_pixels < spec.sampling * (spec.wl_max - spec.wl_min) / spec.resolution:
         need = int(np.ceil(spec.sampling * (spec.wl_max - spec.wl_min) / spec.resolution))
         best = np.ceil(spec.sampling * (spec.wl_max - spec.wl_min) / spec.n_pixels * 100) / 100
@@ -287,7 +354,7 @@ def analyze(spec: Spec, G: int, fixes: bool = True) -> Design:
         warnings.append(Issue(
             f"Spectrum is {spectrum_mm:.1f} mm long but the sensor is only {spec.sensor_mm:.1f} mm; "
             f"the ends of the span fall off. To fit: {hint}.", "f2", remedies))
-    if resolution > spec.resolution:
+    if resolution > spec.resolution and not aberration.get("resolution_aberration"):
         relaxed = float(np.ceil(resolution * 100) / 100)
         warnings.append(Issue(f"Achieved resolution {resolution:.3g} nm is worse than the "
                               f"{spec.resolution:g} nm target.", "resolution",
@@ -318,15 +385,8 @@ def analyze(spec: Spec, G: int, fixes: bool = True) -> Design:
             f"{eta[0]:.0%} at {spec.wl_min:g} nm, {eta[1]:.0%} at {spec.wl_max:g} nm.", "blaze_nm",
             {f"Blaze at {auto:.0f} nm": {"blaze_nm": None}} if spec.blaze_nm and fits else {}))
 
-    return Design(
-        G=G, included_deg=spec.included_deg, alpha=float(alpha), beta_center=float(beta_c),
-        beta_min=float(beta_min), beta_max=float(beta_max),
-        blaze_nm=blaze_nm, blaze_angle=theta_b,
-        dispersion=float(D), rld=float(rld), slit_um=float(slit_um),
-        spectrum_mm=spectrum_mm, fold1=fold1, fold2=fold2,
-        resolution_image=float(res_image), resolution_grating=float(res_grating),
-        resolution=resolution, warnings=warnings, mirrors_clear=mirrors_clear,
-    )
+    return Design(**common, resolution=resolution, warnings=warnings,
+                  mirrors_clear=mirrors_clear, **aberration)
 
 
 def recommend_groove_density(spec: Spec, options=GROOVE_OPTIONS) -> Design:
@@ -336,7 +396,7 @@ def recommend_groove_density(spec: Spec, options=GROOVE_OPTIONS) -> Design:
     Falls back to the best-resolving design that still fits, then to the valid
     design whose spectrum comes closest to fitting the sensor.
     """
-    designs = [analyze(spec, G) for G in sorted(options)]
+    designs = [analyze(spec, G, fixes=False) for G in sorted(options)]
     valid = [d for d in designs if d.ok]
     fits = [d for d in valid if d.spectrum_mm <= spec.sensor_mm]
     meets = [d for d in fits if d.resolution <= spec.resolution]
@@ -363,14 +423,14 @@ def sensor_position(spec: Spec, design: Design, wl_nm):
     return spec.f2 * (np.tan(np.radians(beta - design.beta_center) - t2) + np.tan(t2))
 
 
-def detector_signal(spec: Spec, design: Design, lines_nm, weights=None, extra_fwhm_nm=0.0):
+def detector_signal(spec: Spec, design: Design, lines_nm, weights=None):
     """
     Simulated detector read-out for a source of emission lines.
 
     Each line lands at sensor_position() and is blurred to the design's
     resolution (FWHM = resolution / rld on the detector, which combines the
-    slit image and the grating limit), plus `extra_fwhm_nm` in quadrature
-    (scalar or per line, e.g. mirror aberrations), then sampled at every pixel centre.
+    slit image and the grating limit) plus, when traced, the mirror blur at
+    that wavelength in quadrature, then sampled at every pixel centre.
     Returns (wavelength_nm per pixel, signal per pixel); pixels outside the
     reachable range get NaN wavelength.
     """
@@ -378,7 +438,9 @@ def detector_signal(spec: Spec, design: Design, lines_nm, weights=None, extra_fw
     pitch = spec.pixel_um * UM_TO_MM
     x_pix = (np.arange(spec.n_pixels) - (spec.n_pixels - 1) / 2) * pitch
     lines = np.atleast_1d(np.asarray(lines_nm, dtype=float))
-    fwhm = np.hypot(design.resolution, np.broadcast_to(extra_fwhm_nm, lines.shape)) / design.rld
+    blur = np.interp(lines, design.aberration_wl, design.aberration_nm) if design.aberration_wl else 0.0
+    fwhm = np.hypot(design.resolution_image, design.resolution_grating) / design.rld
+    fwhm = np.hypot(fwhm, blur / design.rld) * np.ones_like(lines)
     w = np.ones_like(lines) if weights is None else np.asarray(weights, dtype=float)
     x_line = sensor_position(spec, design, lines)
     ok = np.isfinite(x_line)

@@ -13,11 +13,11 @@ from config import (
     SPECTRAL_RES_MIN, SPECTRAL_RES_MAX, WAVELENGTH_MIN, WAVELENGTH_MAX,
     PIXEL_SIZE_MIN, PIXEL_SIZE_MAX, N_PIXELS_MIN, N_PIXELS_MAX,
     FOCAL_LENGTH_MIN, FOCAL_LENGTH_MAX, INCLUDED_ANGLE_MIN, INCLUDED_ANGLE_MAX,
+    LENS_APERTURE, GRATING_APERTURE,
 )
-from optics import (Issue, Spec, analyze, recommend_groove_density, detector_signal, line_dip,
+from optics import (Spec, analyze, recommend_groove_density, detector_signal, line_dip,
                     HG_AR_LINES, blaze_efficiency, default_blaze_wavelength)
 from plot import ray_figure, detector_figure, efficiency_figure
-from grating import aberration_blur
 
 st.set_page_config(page_title="Spectrometer Designer", page_icon="🔭", layout="wide")
 
@@ -31,7 +31,8 @@ DEFAULTS = {
     "resolution": DEFAULT_SPECTRAL_RES,
     "pixel_um": DEFAULT_PIXEL_SIZE, "n_pixels": DEFAULT_N_PIXELS, "sampling": DEFAULT_SAMPLING,
     "f1": DEFAULT_F1, "f2": DEFAULT_F2,
-    "angle": None, "G": None, "blaze": None, "exact": False,
+    "beam_mm": LENS_APERTURE, "exact": False,
+    "angle": None, "G": None, "blaze": None,
 }
 LIMITS = {
     "wl_min": (WAVELENGTH_MIN, WAVELENGTH_MAX), "wl_max": (WAVELENGTH_MIN, WAVELENGTH_MAX),
@@ -40,7 +41,7 @@ LIMITS = {
     "sampling": (1.0, 10.0), "f1": (FOCAL_LENGTH_MIN, FOCAL_LENGTH_MAX),
     "f2": (FOCAL_LENGTH_MIN, FOCAL_LENGTH_MAX),
     "angle": (INCLUDED_ANGLE_MIN, INCLUDED_ANGLE_MAX),
-    "blaze": (WAVELENGTH_MIN, WAVELENGTH_MAX),
+    "blaze": (WAVELENGTH_MIN, WAVELENGTH_MAX), "beam_mm": (2.0, GRATING_APERTURE),
 }
 ss = st.session_state
 
@@ -117,6 +118,10 @@ with st.sidebar:
     c1.number_input("f1, collimator (mm)", *LIMITS["f1"], step=5.0, key="f1")
     c2.number_input("f2, focusing (mm)", *LIMITS["f2"], step=5.0, key="f2",
                     help="Longer f2 spreads the spectrum more: finer resolution, longer spectrum.")
+    st.number_input("Beam diameter (mm)", *LIMITS["beam_mm"], step=1.0, key="beam_mm",
+                    help="Collimated beam width, set by the collimator's clear aperture. "
+                         "Narrower = slower optics (f/number = f1 / beam): less aberration "
+                         "and less light.")
     st.toggle("Exact mirrors (aberrations)", key="exact",
               disabled=ss.grating_type == GRATING_TYPE_TRANSMISSIVE,
               help="Czerny–Turner only. Trace real spherical mirrors instead of ideal ones: "
@@ -135,24 +140,15 @@ if ss.wl_min >= ss.wl_max:
 spec = Spec(wl_min=ss.wl_min, wl_max=ss.wl_max, resolution=ss.resolution,
             pixel_um=ss.pixel_um, n_pixels=int(ss.n_pixels), sampling=ss.sampling,
             f1=ss.f1, f2=ss.f2, included_deg=ss.angle, blaze_nm=ss.blaze,
+            beam_mm=ss.beam_mm, exact_mirrors=ss.exact,
             transmissive=ss.grating_type == GRATING_TYPE_TRANSMISSIVE, m=DIFFRACTION_ORDER)
 recommended = recommend_groove_density(spec)
 G = ss.G or recommended.G
 design = analyze(spec, G)
-computed_angle = analyze(replace(spec, included_deg=None), G).included_deg
-
-# Exact mirrors: traced blur adds in quadrature to the analytic resolution.
-exact = ss.exact and not spec.transmissive and design.ok
+computed_angle = analyze(replace(spec, included_deg=None, exact_mirrors=False), G,
+                         fixes=False).included_deg
+exact = bool(design.aberration_wl)               # mirror blur traced into the resolution
 resolution = design.resolution
-if exact:
-    blur_wl, blur_nm = aberration_blur(spec, design)
-    resolution = float(np.hypot(design.resolution, np.nanmax(blur_nm)))
-    if resolution > spec.resolution:
-        design.warnings.append(Issue(
-            f"Mirror aberrations add up to {np.nanmax(blur_nm):.2f} nm of blur, so resolution "
-            f"with exact mirrors is {resolution:.3f} nm (target {spec.resolution:g} nm). Fast, "
-            f"strongly folded mirrors cause it: longer f1/f2 or a smaller included angle "
-            f"reduce it.", "f2"))
 
 with angle_slot:
     # The slider shows the computed angle until the user moves it.
@@ -271,8 +267,7 @@ with detector_tab:
     elif lines:
         # Lamp lines taken as equally bright; the grating's efficiency weights them.
         wl_pix, signal = detector_signal(spec, design, lines,
-                                         blaze_efficiency(lines, design.blaze_nm, spec.m),
-                                         np.interp(lines, blur_wl, blur_nm) if exact else 0.0)
+                                         blaze_efficiency(lines, design.blaze_nm, spec.m))
         st.plotly_chart(detector_figure(wl_pix, signal, lines,
                                         (spec.wl_min, spec.wl_max)), width="stretch")
         st.caption(f"{spec.n_pixels} pixels of {spec.pixel_um:g} µm. Each line is blurred to the "
@@ -318,6 +313,7 @@ with values_tab:
         ("Angles", f"β at {spec.wl_min:g} nm", fmt(design.beta_min, 2), "°"),
         ("Angles", f"β at {spec.wl_max:g} nm", fmt(design.beta_max, 2), "°"),
         ("Optics", "Slit width", fmt(design.slit_um, 1), "µm"),
+        ("Optics", "Beam diameter (f1 f/number)", f"{spec.beam_mm:g} (f/{spec.f1 / spec.beam_mm:.1f})", "mm"),
         ("Optics", "Reciprocal linear dispersion", fmt(design.rld, 2), "nm/mm"),
         ("Optics", "Spectrum length", fmt(design.spectrum_mm, 2), "mm"),
         ("Optics", "Sensor length", fmt(spec.sensor_mm, 2), "mm"),
@@ -327,7 +323,7 @@ with values_tab:
                  ("Optics", "M2 off-axis angle (detector tilt)", fmt(design.fold2, 1), "°")]
     if exact:
         rows.insert(3, ("Resolution", "Mirror aberration blur",
-                        f"{np.nanmin(blur_nm):.3f} – {np.nanmax(blur_nm):.3f}", "nm"))
+                        f"{min(design.aberration_nm):.3f} – {max(design.aberration_nm):.3f}", "nm"))
     st.dataframe([dict(zip(["Group", "Quantity", "Value", "Unit"], r)) for r in rows],
                  hide_index=True, width="stretch")
 
