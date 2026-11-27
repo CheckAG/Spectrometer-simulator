@@ -14,8 +14,9 @@ from config import (
     PIXEL_SIZE_MIN, PIXEL_SIZE_MAX, N_PIXELS_MIN, N_PIXELS_MAX,
     FOCAL_LENGTH_MIN, FOCAL_LENGTH_MAX, INCLUDED_ANGLE_MIN, INCLUDED_ANGLE_MAX,
 )
-from optics import Spec, analyze, recommend_groove_density
-from plot import ray_figure
+from optics import (Spec, analyze, recommend_groove_density, detector_signal, line_dip,
+                    HG_AR_LINES, blaze_efficiency, default_blaze_wavelength)
+from plot import ray_figure, detector_figure, efficiency_figure
 
 st.set_page_config(page_title="Spectrometer Designer", page_icon="🔭", layout="wide")
 
@@ -29,7 +30,7 @@ DEFAULTS = {
     "resolution": DEFAULT_SPECTRAL_RES,
     "pixel_um": DEFAULT_PIXEL_SIZE, "n_pixels": DEFAULT_N_PIXELS, "sampling": DEFAULT_SAMPLING,
     "f1": DEFAULT_F1, "f2": DEFAULT_F2,
-    "angle": None, "G": None,
+    "angle": None, "G": None, "blaze": None,
 }
 LIMITS = {
     "wl_min": (WAVELENGTH_MIN, WAVELENGTH_MAX), "wl_max": (WAVELENGTH_MIN, WAVELENGTH_MAX),
@@ -38,6 +39,7 @@ LIMITS = {
     "sampling": (1.0, 10.0), "f1": (FOCAL_LENGTH_MIN, FOCAL_LENGTH_MAX),
     "f2": (FOCAL_LENGTH_MIN, FOCAL_LENGTH_MAX),
     "angle": (INCLUDED_ANGLE_MIN, INCLUDED_ANGLE_MAX),
+    "blaze": (WAVELENGTH_MIN, WAVELENGTH_MAX),
 }
 ss = st.session_state
 
@@ -72,7 +74,7 @@ if "loaded" not in ss:
 def apply_fix(fix):
     """Button callback: write a fix's Spec overrides into the inputs."""
     for field, value in fix.items():
-        key = "angle" if field == "included_deg" else field
+        key = {"included_deg": "angle", "blaze_nm": "blaze"}.get(field, field)
         ss[key] = None if value is None else clamp(key, value)
 
 
@@ -124,7 +126,7 @@ if ss.wl_min >= ss.wl_max:
 
 spec = Spec(wl_min=ss.wl_min, wl_max=ss.wl_max, resolution=ss.resolution,
             pixel_um=ss.pixel_um, n_pixels=int(ss.n_pixels), sampling=ss.sampling,
-            f1=ss.f1, f2=ss.f2, included_deg=ss.angle,
+            f1=ss.f1, f2=ss.f2, included_deg=ss.angle, blaze_nm=ss.blaze,
             transmissive=ss.grating_type == GRATING_TYPE_TRANSMISSIVE, m=DIFFRACTION_ORDER)
 recommended = recommend_groove_density(spec)
 G = ss.G or recommended.G
@@ -156,13 +158,24 @@ with grating_slot:
     if ss.G is not None and ss.G != recommended.G:
         st.button(f"Use recommended ({recommended.G})", key="G_reset",
                   on_click=follow_computed, args=("G",))
+    computed_blaze = default_blaze_wavelength(spec.wl_min, spec.wl_max)
+    ss.blaze_input = ss.blaze if ss.blaze is not None else round(computed_blaze)
+    st.number_input("Blaze wavelength (nm)", *LIMITS["blaze"], step=10.0, key="blaze_input",
+                    on_change=lambda: ss.update(blaze=ss.blaze_input),
+                    help="Wavelength of peak grating efficiency. Computed to centre the span "
+                         "in the 0.67–1.8 × blaze window; set it to the blaze of a grating "
+                         "you own or plan to buy.")
+    if ss.blaze is not None:
+        c1, c2 = st.columns([3, 2])
+        c1.caption(f"Manual · computed: {computed_blaze:.0f} nm")
+        c2.button("Use computed", key="blaze_reset", on_click=follow_computed, args=("blaze",))
 
 # Mirror inputs to the URL so the page link reproduces this design.
 st.query_params.from_dict({k: ss[k] for k in DEFAULTS if ss[k] is not None})
 
 # ── Warnings next to their inputs ────────────────────────────────────────────
 SECTION = {"wl_min": "spectrum", "wl_max": "spectrum", "resolution": "spectrum",
-           "n_pixels": "detector", "f2": "optics", "included_deg": "optics"}
+           "n_pixels": "detector", "f2": "optics", "included_deg": "optics", "blaze_nm": "optics"}
 for issue in design.warnings:
     with slots[SECTION.get(issue.field, "optics")]:
         st.caption(f"⚠️ {issue.split('. ')[0].split('; ')[0]}")
@@ -204,8 +217,8 @@ if design.warnings:
 else:
     st.success("Design meets the target and fits the sensor.", icon="✅")
 
-trace_tab, values_tab, learn_tab, export_tab = st.tabs(
-    ["Ray trace", "Design values", "How it works", "Share & export"])
+trace_tab, detector_tab, values_tab, learn_tab, export_tab = st.tabs(
+    ["Ray trace", "Detector", "Design values", "How it works", "Share & export"])
 
 with trace_tab:
     show_stray = st.toggle("Show stray orders (0 and 2)", value=True)
@@ -216,6 +229,58 @@ with trace_tab:
                    "wavelength and order; click a legend entry to hide an order.")
     else:
         st.error("No valid geometry for this grating — nothing to trace.")
+
+with detector_tab:
+    source = st.segmented_control("Light source", ["Hg–Ar lamp", "Custom lines"],
+                                  default="Hg–Ar lamp", key="source")
+    if source == "Custom lines":
+        text = st.text_input("Emission lines (nm, comma-separated)", "589.0, 589.6",
+                             help="Try the sodium D doublet (589.0, 589.6) or any pair "
+                                  "closer than your resolution.")
+        try:
+            lines = [float(v) for v in text.replace(";", ",").split(",") if v.strip()]
+        except ValueError:
+            st.error("Enter numbers separated by commas.")
+            lines = []
+    else:
+        lines = [l for l in HG_AR_LINES if spec.wl_min <= l <= spec.wl_max]
+    if not design.ok:
+        st.error("No valid geometry for this grating — nothing to simulate.")
+    elif lines:
+        # Lamp lines taken as equally bright; the grating's efficiency weights them.
+        wl_pix, signal = detector_signal(spec, design, lines,
+                                         blaze_efficiency(lines, design.blaze_nm, spec.m))
+        st.plotly_chart(detector_figure(wl_pix, signal, lines,
+                                        (spec.wl_min, spec.wl_max)), width="stretch")
+        st.caption(f"{spec.n_pixels} pixels of {spec.pixel_um:g} µm. Each line is blurred to the "
+                   f"design resolution ({design.resolution:.3f} nm FWHM) and scaled by the grating "
+                   f"efficiency below; dotted lines mark the true wavelengths. Drag to zoom "
+                   f"in on a pair, double-click to reset.")
+        close = sorted(lines)
+        pairs = [(a, b) for a, b in zip(close, close[1:]) if b - a < 3 * design.resolution]
+        for a, b in pairs:
+            dip = line_dip(wl_pix, signal, a, b)
+            if np.isnan(dip):
+                st.info(f"{a:g} / {b:g} nm: not both on the sensor.")
+            elif dip <= 0.81:
+                st.success(f"{a:g} / {b:g} nm ({b - a:.2f} nm apart): **resolved**, signal dips "
+                           f"to {dip:.0%} between them.", icon="✅")
+            else:
+                st.warning(f"{a:g} / {b:g} nm ({b - a:.2f} nm apart): **not resolved**"
+                           + (f", dip only to {dip:.0%}" if dip < 1 else ", seen as one peak")
+                           + " (Rayleigh needs ≤ 81 %).", icon="⚠️")
+    else:
+        st.info("No lines inside the span.")
+
+    st.markdown("#### Grating efficiency")
+    st.plotly_chart(efficiency_figure(spec.wl_min, spec.wl_max, design.blaze_nm, spec.m),
+                    width="stretch")
+    eta = blaze_efficiency([spec.wl_min, spec.wl_max], design.blaze_nm, spec.m)
+    st.caption(f"Blaze {design.blaze_nm:.0f} nm ({design.blaze_angle:.1f}° facets). Relative "
+               f"efficiency {eta[0]:.0%} at {spec.wl_min:g} nm and {eta[1]:.0%} at "
+               f"{spec.wl_max:g} nm. Order 2 peaks at half the blaze wavelength, so short "
+               f"wavelengths in order 2 are what an order-sorting filter has to block. "
+               f"Scalar model: real gratings differ with polarisation.")
 
 with values_tab:
     rows = [

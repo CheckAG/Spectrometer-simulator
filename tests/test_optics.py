@@ -180,6 +180,7 @@ def _apply(s, fix):
     (dict(resolution=0.3), 300, "resolution"),                 # target not met
     (dict(wl_min=400, wl_max=900), 300, "wl_max"),             # order overlap
     (dict(transmissive=False, included_deg=10), 300, "included_deg"),  # mirrors collide
+    (dict(blaze_nm=300), 300, "blaze_nm"),                      # off-span blaze
 ])
 def test_every_fix_clears_its_warning(kw, G, field):
     s = spec(**kw)
@@ -189,3 +190,11 @@ def test_every_fix_clears_its_warning(kw, G, field):
         for label, fix in issue.fixes.items():
             after = analyze(_apply(s, fix), G).warnings
             assert not any(w.field == field and w[:20] == issue[:20] for w in after), label
+
+
+def test_blaze_efficiency_peaks_and_window():
+    from optics import blaze_efficiency
+    assert blaze_efficiency(500, 500) == pytest.approx(1)
+    assert blaze_efficiency(250, 500, m=2) == pytest.approx(1)   # order 2 peaks at λB/2
+    lo, hi = blaze_efficiency([0.67 * 500, 1.8 * 500], 500)
+    assert 0.35 < lo < 0.5 and 0.4 < hi < 0.55                  # matches the rule-of-thumb window

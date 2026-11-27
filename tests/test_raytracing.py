@@ -204,3 +204,31 @@ def test_ray_figure_has_every_order_and_element(transmissive):
     labels = {a.text for a in fig.layout.annotations}
     names = {"<b>F1</b>", "<b>F2</b>"} if transmissive else {"<b>M1</b>", "<b>M2</b>"}
     assert names | {"<b>Grating</b>", "<b>Sensor</b>"} <= labels
+
+
+@pytest.mark.parametrize("transmissive,angle", [(True, 0.0), (False, 40.0)])
+def test_sensor_position_matches_trace(transmissive, angle):
+    """Analytic wavelength → detector mapping agrees with where traced rays land."""
+    from optics import analyze, sensor_position
+    from grating import trace, sensor_hits
+    spec = _spec(transmissive=transmissive, included_deg=angle)
+    design = analyze(spec, 300)
+    wls = np.array([400.0, 480.0, 550.0, 620.0, 700.0])
+    components, bundles = trace(spec, design, wls)
+    hits = np.nanmean(sensor_hits(components, bundles).reshape(len(wls), -1), axis=1)
+    x = sensor_position(spec, design, wls)
+    assert abs(x[2]) < 1e-9                        # centre wavelength at the sensor centre
+    assert np.allclose(np.abs(hits - hits[2]), np.abs(x), atol=1e-3)
+
+
+def test_detector_signal_peaks_and_doublet():
+    from optics import analyze, detector_signal, line_dip
+    spec = _spec()
+    design = analyze(spec, 300)                    # resolution ≈ 1 nm
+    wl, sig = detector_signal(spec, design, [450.0, 650.0])
+    for line in (450.0, 650.0):
+        near = np.abs(wl - line) < 5
+        assert abs(wl[near][np.argmax(sig[near])] - line) < design.rld * spec.pixel_um * 1e-3
+    split = lambda sep: line_dip(*detector_signal(spec, design, [577, 577 + sep]), 577, 577 + sep)
+    assert split(2 * design.resolution) < 0.81 < split(0.6 * design.resolution)
+    assert np.isnan(line_dip(wl, sig, 100, 110))     # off the sensor
