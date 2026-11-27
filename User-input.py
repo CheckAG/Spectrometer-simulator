@@ -14,8 +14,9 @@ from config import (
     PIXEL_SIZE_MIN, PIXEL_SIZE_MAX, N_PIXELS_MIN, N_PIXELS_MAX,
     FOCAL_LENGTH_MIN, FOCAL_LENGTH_MAX, INCLUDED_ANGLE_MIN, INCLUDED_ANGLE_MAX,
 )
-from optics import Spec, analyze, recommend_groove_density
-from plot import ray_figure
+from optics import (Spec, analyze, recommend_groove_density, detector_signal, line_dip,
+                    HG_AR_LINES)
+from plot import ray_figure, detector_figure
 
 st.set_page_config(page_title="Spectrometer Designer", page_icon="🔭", layout="wide")
 
@@ -204,8 +205,8 @@ if design.warnings:
 else:
     st.success("Design meets the target and fits the sensor.", icon="✅")
 
-trace_tab, values_tab, learn_tab, export_tab = st.tabs(
-    ["Ray trace", "Design values", "How it works", "Share & export"])
+trace_tab, detector_tab, values_tab, learn_tab, export_tab = st.tabs(
+    ["Ray trace", "Detector", "Design values", "How it works", "Share & export"])
 
 with trace_tab:
     show_stray = st.toggle("Show stray orders (0 and 2)", value=True)
@@ -216,6 +217,45 @@ with trace_tab:
                    "wavelength and order; click a legend entry to hide an order.")
     else:
         st.error("No valid geometry for this grating — nothing to trace.")
+
+with detector_tab:
+    source = st.segmented_control("Light source", ["Hg–Ar lamp", "Custom lines"],
+                                  default="Hg–Ar lamp", key="source")
+    if source == "Custom lines":
+        text = st.text_input("Emission lines (nm, comma-separated)", "589.0, 589.6",
+                             help="Try the sodium D doublet (589.0, 589.6) or any pair "
+                                  "closer than your resolution.")
+        try:
+            lines = [float(v) for v in text.replace(";", ",").split(",") if v.strip()]
+        except ValueError:
+            st.error("Enter numbers separated by commas.")
+            lines = []
+    else:
+        lines = [l for l in HG_AR_LINES if spec.wl_min <= l <= spec.wl_max]
+    if not design.ok:
+        st.error("No valid geometry for this grating — nothing to simulate.")
+    elif lines:
+        wl_pix, signal = detector_signal(spec, design, lines)
+        st.plotly_chart(detector_figure(wl_pix, signal, lines,
+                                        (spec.wl_min, spec.wl_max)), width="stretch")
+        st.caption(f"{spec.n_pixels} pixels of {spec.pixel_um:g} µm. Each line is blurred to the "
+                   f"design resolution ({design.resolution:.3f} nm FWHM); dotted lines mark the "
+                   f"true wavelengths. Drag to zoom in on a pair, double-click to reset.")
+        close = sorted(lines)
+        pairs = [(a, b) for a, b in zip(close, close[1:]) if b - a < 3 * design.resolution]
+        for a, b in pairs:
+            dip = line_dip(wl_pix, signal, a, b)
+            if np.isnan(dip):
+                st.info(f"{a:g} / {b:g} nm: not both on the sensor.")
+            elif dip <= 0.81:
+                st.success(f"{a:g} / {b:g} nm ({b - a:.2f} nm apart): **resolved**, signal dips "
+                           f"to {dip:.0%} between them.", icon="✅")
+            else:
+                st.warning(f"{a:g} / {b:g} nm ({b - a:.2f} nm apart): **not resolved**"
+                           + (f", dip only to {dip:.0%}" if dip < 1 else ", seen as one peak")
+                           + " (Rayleigh needs ≤ 81 %).", icon="⚠️")
+    else:
+        st.info("No lines inside the span.")
 
 with values_tab:
     rows = [

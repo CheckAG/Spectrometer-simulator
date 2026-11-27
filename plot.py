@@ -183,3 +183,23 @@ def ray_figure(spec: Spec, design: Design, extra_orders=EXTRA_ORDERS, height=520
                       legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0),
                       hoverlabel=dict(namelength=-1), dragmode="pan")
     return fig
+
+
+def detector_figure(wl_pix, signal, lines_nm, span=None, height=360):
+    """Simulated detector read-out vs wavelength; true lines dotted, design span shaded."""
+    fig = go.Figure()
+    if span:
+        fig.add_vrect(x0=span[0], x1=span[1], fillcolor="#9a9a9a", opacity=0.08, line_width=0,
+                      annotation_text="design span", annotation_position="top left")
+    for line in lines_nm:
+        fig.add_vline(x=line, line=dict(color=wavelength_rgb(line), width=1, dash="dot"),
+                      opacity=0.7)
+    pix = np.arange(len(signal))
+    fig.add_trace(go.Scatter(
+        x=wl_pix, y=signal, mode="lines", line=dict(color="#4C8DFF", width=1.5, shape="hvh"),
+        customdata=pix, showlegend=False,
+        hovertemplate="pixel %{customdata} · %{x:.2f} nm · %{y:.3f}<extra></extra>"))
+    fig.update_xaxes(title="wavelength (nm)", range=[np.nanmin(wl_pix), np.nanmax(wl_pix)])
+    fig.update_yaxes(title="signal (peak = 1)", rangemode="tozero")
+    fig.update_layout(height=height, margin=dict(l=10, r=10, t=10, b=10), dragmode="zoom")
+    return fig

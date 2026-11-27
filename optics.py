@@ -329,3 +329,64 @@ def recommend_groove_density(spec: Spec, options=GROOVE_OPTIONS) -> Design:
     if fits:
         return min(fits, key=lambda d: d.resolution)
     return min(valid, key=lambda d: d.spectrum_mm) if valid else designs[0]
+
+
+# Mercury–argon calibration lamp, strongest lines (nm, air).
+HG_AR_LINES = (404.66, 435.83, 546.07, 576.96, 579.07, 696.54, 706.72, 738.40, 750.39,
+               763.51, 772.38, 794.82, 811.53, 826.45, 842.46, 852.14, 912.30)
+
+
+def sensor_position(spec: Spec, design: Design, wl_nm):
+    """
+    Position (mm) of wavelength(s) along the detector, measured from where the
+    centre wavelength lands (the sensor centre in grating.py). Same tilted
+    focal-plane mapping as analyze(); NaN where the order cannot exist.
+    """
+    beta = diffraction_angle(wl_nm, design.G, design.alpha, spec.m)
+    t2 = np.radians(design.fold2)
+    return spec.f2 * (np.tan(np.radians(beta - design.beta_center) - t2) + np.tan(t2))
+
+
+def detector_signal(spec: Spec, design: Design, lines_nm, weights=None):
+    """
+    Simulated detector read-out for a source of emission lines.
+
+    Each line lands at sensor_position() and is blurred to the design's
+    resolution (FWHM = resolution / rld on the detector, which combines the
+    slit image and the grating limit), then sampled at every pixel centre.
+    Returns (wavelength_nm per pixel, signal per pixel); pixels outside the
+    reachable range get NaN wavelength.
+    """
+    # ponytail: Gaussian line shape; a rect slit image ⊗ pixel would sharpen the edges.
+    pitch = spec.pixel_um * UM_TO_MM
+    x_pix = (np.arange(spec.n_pixels) - (spec.n_pixels - 1) / 2) * pitch
+    fwhm = design.resolution / design.rld
+    lines = np.atleast_1d(np.asarray(lines_nm, dtype=float))
+    w = np.ones_like(lines) if weights is None else np.asarray(weights, dtype=float)
+    x_line = sensor_position(spec, design, lines)
+    ok = np.isfinite(x_line)
+    signal = (w[ok, None] * np.exp(-4 * np.log(2) * ((x_pix - x_line[ok, None]) / fwhm) ** 2)).sum(0)
+
+    # Pixel → wavelength by inverting the (monotonic) mapping on a fine grid.
+    span = spec.wl_max - spec.wl_min
+    grid = np.linspace(max(spec.wl_min - span, 1.0), spec.wl_max + span, 4000)
+    x_grid = sensor_position(spec, design, grid)
+    good = np.isfinite(x_grid)
+    grid, x_grid = grid[good], x_grid[good]
+    order = np.argsort(x_grid)
+    wl_pix = np.interp(x_pix, x_grid[order], grid[order], left=np.nan, right=np.nan)
+    return wl_pix, signal
+
+
+def line_dip(wl_pix, signal, a_nm, b_nm):
+    """
+    Lowest signal between two lines as a fraction of the weaker peak:
+    ≈1 merged, ≤0.81 resolved (Rayleigh-equivalent), NaN if either is off the sensor.
+    """
+    lo, hi = sorted((a_nm, b_nm))
+    with np.errstate(invalid="ignore"):
+        between = (wl_pix >= lo) & (wl_pix <= hi)
+    peaks = [signal[np.nanargmin(np.abs(wl_pix - x))] for x in (lo, hi)]
+    if not between.any() or np.isnan(wl_pix).all() or not (np.nanmin(wl_pix) <= lo and hi <= np.nanmax(wl_pix)):
+        return float("nan")
+    return float(signal[between].min() / min(peaks))
