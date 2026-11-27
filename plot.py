@@ -64,6 +64,41 @@ def _landing(bundles):
     return np.nanmean(hit, axis=1)
 
 
+def _glyph(c, back, transmissive):
+    """
+    Outline of an element in its local frame (x = along the normal, y = along
+    the aperture); `back` (±1) is the side light leaves through for
+    transmissive parts and the non-reflecting side for reflectors.
+    Returns (x, y) of a closed polygon, schematic but proportioned to the aperture.
+    """
+    h = c.aperture / 2
+    t = np.linspace(-h, h, 41)
+    if c.type == "lens":                           # biconvex
+        w = 0.06 * c.aperture * (1 - (t / h) ** 2) + 0.4
+        return np.r_[w, -w[::-1], w[:1]], np.r_[t, t[::-1], t[:1]]
+    if c.type == "spherical_mirror":               # concave face, flat back
+        sag = (t ** 2 - h ** 2) / (4 * abs(c.f))  # edges reach toward the light
+        x_face, x_back = -back * sag, np.full_like(t, back * 2.0)
+        return np.r_[x_face, x_back[::-1], x_face[:1]], np.r_[t, t[::-1], t[:1]]
+    if c.type == "grating":                        # substrate with sawtooth grooves
+        n = 16
+        ty = np.linspace(-h, h, 2 * n + 1)
+        tooth = np.where(np.arange(2 * n + 1) % 2, 1.2, 0.0)
+        face = -back if not transmissive else back  # grooves on the working face
+        sub = -face * 3.0
+        x = np.r_[face * tooth, sub, sub, 0]
+        y = np.r_[ty, h, -h, -h]
+        return x, y
+    depth = 1.5 if c.type == "sensor" else 1.0     # sensor package, plane mirror, ...
+    return np.array([0, 0, back * depth, back * depth, 0]), np.array([-h, h, h, -h, -h])
+
+
+def _rgba(hex_color, a):
+    r, g, b = (int(hex_color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)) if len(hex_color) == 7 \
+        else (int(ch * 2, 16) for ch in hex_color.lstrip("#"))
+    return f"rgba({r},{g},{b},{a})"
+
+
 def ray_figure(spec: Spec, design: Design, extra_orders=EXTRA_ORDERS, height=520):
     components, slit = build_components(spec, design)
     wavelengths = np.linspace(spec.wl_min, spec.wl_max, N_WAVELENGTH_SAMPLES)
@@ -90,39 +125,54 @@ def ray_figure(spec: Spec, design: Design, extra_orders=EXTRA_ORDERS, height=520
             fig.add_trace(go.Scatter(
                 x=xs, y=ys, mode="lines", opacity=opacity,
                 line=dict(color=wavelength_rgb(wl), width=1 if m == spec.m else 0.8, dash=dash),
-                name=label, legendgroup=f"m{m}", showlegend=k == 0,
-                legendrank=orders.index(m),
+                name=label, legendgroup=f"m{m}", showlegend=False,
                 hovertemplate=f"{wl:.0f} nm · order {m}<extra></extra>"))
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", name=label,
+                                 legendgroup=f"m{m}", legendrank=orders.index(m),
+                                 line=dict(color="#9a9a9a", width=2, dash=dash)))
         spot = _landing(bundles)
         if spot is not None:
             fig.add_annotation(x=spot[0], y=spot[1], text=f"m = {m}", showarrow=True,
                                ax=30, ay=-30 + 22 * orders.index(m), arrowhead=2,
-                               arrowsize=0.8, font=dict(size=11), bgcolor="rgba(255,255,255,0.85)")
+                               arrowsize=0.8, arrowcolor="#9a9a9a", font=dict(size=11),
+                               bgcolor="rgba(128,128,128,0.25)", borderpad=2)
 
     centre = pts.mean(axis=0)
     for k, c in enumerate(components):
         h = c.aperture / 2
-        ex, ey = c.to_global(np.zeros(2), np.array([-h, h]))
+        color = ELEMENT_COLOR.get(c.type, "#555555")
+        # Direction of the light arriving at this element (from the white-light trace).
+        a = np.arctan2(np.nanmean(np.sin(white[2, :, k])), np.nanmean(np.cos(white[2, :, k])))
+        nx, ny = np.subtract(c.to_global(np.ones(1), np.zeros(1)), c.to_global(np.zeros(1), np.zeros(1)))
+        back = 1.0 if np.isnan(a) or nx[0] * np.cos(a) + ny[0] * np.sin(a) >= 0 else -1.0
+        gx, gy = _glyph(c, back, spec.transmissive)
+        ex, ey = c.to_global(gx, gy)
+        detail = f"f = {abs(c.f):.0f} mm · " if hasattr(c, "f") else ""
         fig.add_trace(go.Scatter(
-            x=ex, y=ey, mode="lines", showlegend=False,
-            line=dict(color=ELEMENT_COLOR.get(c.type, "#555"), width=7 if c.type == "sensor" else 5),
-            hovertemplate=f"{c.name} · aperture {c.aperture:.1f} mm<extra></extra>"))
-        # Reflectors and the sensor: label on the dark side (continuing the
-        # incoming beam direction). Light passes through transmissive parts,
-        # so label those past the end farther from the layout centre.
-        if c.type == "lens" or (c.type == "grating" and spec.transmissive):
+            x=ex, y=ey, mode="lines", fill="toself", fillcolor=_rgba(color, 0.35),
+            line=dict(color=color, width=1.5), showlegend=False,
+            hovertemplate=f"{c.name} · {detail}aperture {c.aperture:.1f} mm<extra></extra>"))
+        # Reflectors and the sensor: label on the dark side. Light passes through
+        # transmissive parts, so label those past the end farther from the centre.
+        if c.type == "lens" or (c.type == "grating" and spec.transmissive) or np.isnan(a):
             lx, ly = c.to_global(np.zeros(2), np.array([-h - 7, h + 7]))
         else:
-            a = np.arctan2(np.nanmean(np.sin(white[2, :, k])), np.nanmean(np.cos(white[2, :, k])))
             lx, ly = np.array([c.pos[0] + 9 * np.cos(a)]), np.array([c.pos[1] + 9 * np.sin(a)])
         far = int(np.argmax(np.hypot(lx - centre[0], ly - centre[1])))
         fig.add_annotation(x=lx[far], y=ly[far], text=f"<b>{c.name}</b>", showarrow=False,
-                           font=dict(size=12, color=ELEMENT_COLOR.get(c.type, "#555")))
+                           font=dict(size=12, color=color))
+    # Slit: two jaws across the beam; the gap is µm, so it is drawn to scale only by hover.
     sx, sy = slit.mean(axis=1)
-    fig.add_trace(go.Scatter(x=[sx], y=[sy], mode="markers+text", text=["Slit"],
-                             textposition="bottom center", showlegend=False,
-                             marker=dict(symbol="line-ns-open", size=14, line=dict(width=3)),
+    across = slit[:, 0] - slit[:, -1]
+    across = across / np.hypot(*across) if np.hypot(*across) else np.array([0.0, 1.0])
+    g, jaw = design.slit_um * 1e-3 / 2 + 0.3, 4.0
+    jx = [sx + g * across[0], sx + (g + jaw) * across[0], None, sx - g * across[0], sx - (g + jaw) * across[0]]
+    jy = [sy + g * across[1], sy + (g + jaw) * across[1], None, sy - g * across[1], sy - (g + jaw) * across[1]]
+    fig.add_trace(go.Scatter(x=jx, y=jy, mode="lines", line=dict(color="#d0a030", width=4),
+                             showlegend=False,
                              hovertemplate=f"Slit · {design.slit_um:.1f} µm<extra></extra>"))
+    fig.add_annotation(x=sx - (g + jaw + 4) * across[0], y=sy - (g + jaw + 4) * across[1],
+                       text="<b>Slit</b>", showarrow=False, font=dict(size=12, color="#d0a030"))
 
     pad = spec.grating_mm * 0.6
     fig.update_xaxes(range=[pts[:, 0].min() - pad, pts[:, 0].max() + pad], title="x (mm)",

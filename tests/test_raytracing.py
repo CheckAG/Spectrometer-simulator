@@ -199,7 +199,7 @@ def test_ray_figure_has_every_order_and_element(transmissive):
     from plot import ray_figure
     spec = _spec(wl_min=400, wl_max=900, transmissive=transmissive)
     fig = ray_figure(spec, analyze(spec, 300))
-    legend = {t.name for t in fig.data if t.showlegend}
+    legend = {t.name for t in fig.data if t.showlegend is not False}
     assert {n.split()[2] for n in legend} == {"0", "1", "2"}      # "m = k ..."
     labels = {a.text for a in fig.layout.annotations}
     names = {"<b>F1</b>", "<b>F2</b>"} if transmissive else {"<b>M1</b>", "<b>M2</b>"}
