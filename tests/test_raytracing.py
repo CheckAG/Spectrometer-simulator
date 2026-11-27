@@ -1,6 +1,5 @@
 import numpy as np
 import pytest
-import matplotlib.pyplot as plt
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -128,16 +127,6 @@ def test_propagate_rays_first_column_is_initial():
     bundles = propagate_rays([lens], rays, lmb=550e-9)
     assert np.allclose(bundles[:, 0, 0], [0.0, 0.0, 0.0])
 
-def test_propagate_rays_no_figure_leak():
-    """Each call to propagate_rays must not create matplotlib figures."""
-    before = len(plt.get_fignums())
-    lens = Lens(f=100, aperture=50, pos=[100, 0], theta=0)
-    rays = [[0.0, 0.0, 0.0]]
-    propagate_rays([lens], rays)
-    after = len(plt.get_fignums())
-    assert after == before
-
-
 # ── vectorised tracer behaviour ──────────────────────────────────────────────
 
 def test_vectorised_propagate_matches_single_rays():
@@ -202,14 +191,16 @@ def test_second_order_overlaps_first_order_at_double_wavelength(transmissive, in
     assert np.isclose(np.nanmean(sensor_hits(c, first)), np.nanmean(sensor_hits(c, second)))
 
 
-# ── design_rendering ──────────────────────────────────────────────────────────
+# ── plot ──────────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("transmissive", [True, False])
-def test_design_rendering_returns_png_and_leaks_no_figure(transmissive):
+def test_ray_figure_has_every_order_and_element(transmissive):
     from optics import analyze
-    from grating import design_rendering
-    spec = _spec(transmissive=transmissive, included_deg=0 if transmissive else 40)
-    before = len(plt.get_fignums())
-    png = design_rendering(spec, analyze(spec, 600))
-    assert png[:8] == b"\x89PNG\r\n\x1a\n"
-    assert len(plt.get_fignums()) == before
+    from plot import ray_figure
+    spec = _spec(wl_min=400, wl_max=900, transmissive=transmissive)
+    fig = ray_figure(spec, analyze(spec, 300))
+    legend = {t.name for t in fig.data if t.showlegend is not False}
+    assert {n.split()[2] for n in legend} == {"0", "1", "2"}      # "m = k ..."
+    labels = {a.text for a in fig.layout.annotations}
+    names = {"<b>F1</b>", "<b>F2</b>"} if transmissive else {"<b>M1</b>", "<b>M2</b>"}
+    assert names | {"<b>Grating</b>", "<b>Sensor</b>"} <= labels

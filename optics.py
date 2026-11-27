@@ -88,6 +88,18 @@ def fold_angle(clearance, distance):
     return float(max(5.0, np.degrees(0.5 * np.arcsin(min(clearance / distance, 0.9)))))
 
 
+class Issue(str):
+    """
+    A warning. Behaves as its message string; also carries:
+    field — the Spec input it is about (so a UI can show it next to that input),
+    fixes — {button label: {Spec field: new value}} one-click remedies.
+    """
+    def __new__(cls, text, field=None, fixes=None):
+        obj = super().__new__(cls, text)
+        obj.field, obj.fixes = field, fixes or {}
+        return obj
+
+
 @dataclass
 class Spec:
     """What the user wants plus the hardware they picked."""
@@ -154,14 +166,34 @@ def auto_included_angle(spec: Spec, G: int, margin=AUTO_ANGLE_MARGIN) -> float:
     if spec.transmissive:
         return 0.0
     for angle in range(0, 91):
-        d = analyze(replace(spec, included_deg=float(angle)), G)
+        d = analyze(replace(spec, included_deg=float(angle)), G, fixes=False)
         if d.ok and d.mirrors_clear:
             return float(min(angle + margin, 90))
     return 90.0
 
 
-def analyze(spec: Spec, G: int) -> Design:
-    """Evaluate a spectrometer built from `spec` with a G lines/mm grating."""
+def _walk_until_fits(spec, G, overrides, start, step, max_steps=400):
+    """
+    First value from `start` (moving by `step`) at which the spectrum fits the
+    sensor once `overrides(value)` is applied. Needed because in a Czerny–Turner
+    f2, sensor size and angles also move the fold angles, so one-shot linear
+    estimates can miss. None if nothing within max_steps works.
+    """
+    value = start
+    for _ in range(max_steps):
+        s = replace(spec, **overrides(value))
+        d = analyze(s, G, fixes=False)
+        if d.ok and d.spectrum_mm <= s.sensor_mm:
+            return value
+        value += step
+    return None
+
+
+def analyze(spec: Spec, G: int, fixes: bool = True) -> Design:
+    """
+    Evaluate a spectrometer built from `spec` with a G lines/mm grating.
+    fixes=False skips searching for one-click remedies (used for nested calls).
+    """
     if spec.included_deg is None:
         spec = replace(spec, included_deg=auto_included_angle(spec, G))
     m, f1, f2 = spec.m, spec.f1, spec.f2
@@ -199,8 +231,8 @@ def analyze(spec: Spec, G: int) -> Design:
 
     footprint = spec.beam_mm / np.cos(np.radians(alpha))
     if footprint > spec.grating_mm:
-        warnings.append(f"Beam footprint on grating ({footprint:.1f} mm) exceeds grating "
-                        f"size ({spec.grating_mm} mm); light is clipped.")
+        warnings.append(Issue(f"Beam footprint on grating ({footprint:.1f} mm) exceeds grating "
+                              f"size ({spec.grating_mm} mm); light is clipped.", "included_deg"))
         footprint = spec.grating_mm
 
     res_image = rld * image_mm
@@ -208,24 +240,48 @@ def analyze(spec: Spec, G: int) -> Design:
     resolution = float(np.hypot(res_image, res_grating))
 
     if not np.all(np.isfinite([alpha, beta_min, beta_max])):
-        warnings.append(f"{G} lines/mm cannot diffract the full span at this included "
-                        f"angle (|sin β| > 1). Use fewer lines/mm or a smaller angle.")
+        warnings.append(Issue(f"{G} lines/mm cannot diffract the full span at this included "
+                              f"angle (|sin β| > 1). Use fewer lines/mm or a smaller angle.",
+                              "included_deg", {"Use computed angle": {"included_deg": None}}))
         resolution = float("nan")
     if spec.n_pixels < spec.sampling * (spec.wl_max - spec.wl_min) / spec.resolution:
         need = int(np.ceil(spec.sampling * (spec.wl_max - spec.wl_min) / spec.resolution))
-        warnings.append(f"Detector has {spec.n_pixels} pixels but the span at the target "
-                        f"resolution needs ≥ {need} (at {spec.sampling:g} px per resolution "
-                        f"element). No grating fixes this; widen the target or use a longer sensor.")
+        best = np.ceil(spec.sampling * (spec.wl_max - spec.wl_min) / spec.n_pixels * 100) / 100
+        warnings.append(Issue(
+            f"Detector has {spec.n_pixels} pixels but the span at the target resolution needs "
+            f"≥ {need} (at {spec.sampling:g} px per resolution element). No grating fixes this; "
+            f"widen the target or use a longer sensor.", "n_pixels",
+            {f"Target {best:g} nm": {"resolution": float(best)}, f"Use {need} pixels": {"n_pixels": need}}))
     if spectrum_mm > spec.sensor_mm:
-        # Spectrum length scales linearly with f2 (x = f2·tan Δβ).
+        # First guesses scale linearly (x = f2·tan Δβ); _walk_until_fits refines them.
         fit = spec.sensor_mm / spectrum_mm
-        warnings.append(f"Spectrum is {spectrum_mm:.1f} mm long but the sensor is only "
-                        f"{spec.sensor_mm:.1f} mm; the ends of the span fall off. To fit: "
-                        f"f2 ≤ {f2 * fit:.0f} mm, or a sensor ≥ {spectrum_mm:.1f} mm, or a "
-                        f"span of ~{(spec.wl_max - spec.wl_min) * fit:.0f} nm.")
+        remedies = {}
+        if fixes:
+            c = spec.wl_center
+            f2_fit = _walk_until_fits(spec, G, lambda v: {"f2": v}, float(np.floor(f2 * fit)), -1.0)
+            half = _walk_until_fits(
+                spec, G, lambda h: {"wl_min": float(np.ceil(c - h)), "wl_max": float(np.floor(c + h))},
+                float(np.floor((spec.wl_max - spec.wl_min) * fit / 2)), -1.0)
+            px = _walk_until_fits(spec, G, lambda n: {"n_pixels": n},
+                                  int(np.ceil(spectrum_mm / (spec.pixel_um * UM_TO_MM))), 16)
+            if f2_fit and f2_fit > 0:
+                remedies[f"f2 = {f2_fit:g} mm"] = {"f2": f2_fit}
+            if half and half > 0:
+                lo, hi = float(np.ceil(c - half)), float(np.floor(c + half))
+                remedies[f"Span {lo:g}–{hi:g} nm"] = {"wl_min": lo, "wl_max": hi}
+            if px:
+                remedies[f"Use {px} pixels"] = {"n_pixels": px}
+        hint = (" or ".join(remedies) if remedies else
+                f"f2 ≤ {f2 * fit:.0f} mm, or a sensor ≥ {spectrum_mm:.1f} mm, or a span of "
+                f"~{(spec.wl_max - spec.wl_min) * fit:.0f} nm")
+        warnings.append(Issue(
+            f"Spectrum is {spectrum_mm:.1f} mm long but the sensor is only {spec.sensor_mm:.1f} mm; "
+            f"the ends of the span fall off. To fit: {hint}.", "f2", remedies))
     if resolution > spec.resolution:
-        warnings.append(f"Achieved resolution {resolution:.3g} nm is worse than the "
-                        f"{spec.resolution:g} nm target.")
+        relaxed = float(np.ceil(resolution * 100) / 100)
+        warnings.append(Issue(f"Achieved resolution {resolution:.3g} nm is worse than the "
+                              f"{spec.resolution:g} nm target.", "resolution",
+                              {f"Target {relaxed:g} nm": {"resolution": relaxed}}))
     if not spec.transmissive and np.isfinite(alpha):
         # Mirrors sit f1 and f2 from the grating, (α − β) apart as seen from it.
         gap = np.sqrt(f1**2 + f2**2 - 2 * f1 * f2 * np.cos(np.radians(spec.included_deg)))
@@ -233,15 +289,18 @@ def analyze(spec: Spec, G: int) -> Design:
                  + f2 * abs(np.radians(beta_max - beta_min))) / np.cos(t2)
         mirrors_clear = bool(gap >= (spec.beam_mm + m2_mm) / 2)
         if not mirrors_clear:
-            warnings.append(f"M1 and M2 would overlap ({gap:.0f} mm apart, need "
-                            f"≈{(spec.beam_mm + m2_mm) / 2:.0f} mm). Increase the included "
-                            f"angle or the focal lengths.")
+            warnings.append(Issue(f"M1 and M2 would overlap ({gap:.0f} mm apart, need "
+                                  f"≈{(spec.beam_mm + m2_mm) / 2:.0f} mm). Increase the included "
+                                  f"angle or the focal lengths.", "included_deg",
+                                  {"Use computed angle": {"included_deg": None}}))
     if 2 * spec.wl_min < spec.wl_max:
-        warnings.append(f"Second order of {spec.wl_min:g} nm lands on {2 * spec.wl_min:g} nm; "
-                        f"an order-sorting (long-pass) filter is needed.")
+        warnings.append(Issue(f"Second order of {spec.wl_min:g} nm lands on {2 * spec.wl_min:g} nm; "
+                              f"an order-sorting (long-pass) filter is needed.", "wl_max",
+                              {f"Limit span to {spec.wl_min:g}–{2 * spec.wl_min:g} nm":
+                               {"wl_max": float(2 * spec.wl_min)}}))
     if spec.wl_min < 0.67 * blaze_nm or spec.wl_max > 1.8 * blaze_nm:
-        warnings.append(f"Span extends beyond the efficient range of a {blaze_nm:.0f} nm "
-                        f"blaze (≈{0.67 * blaze_nm:.0f}–{1.8 * blaze_nm:.0f} nm).")
+        warnings.append(Issue(f"Span extends beyond the efficient range of a {blaze_nm:.0f} nm "
+                              f"blaze (≈{0.67 * blaze_nm:.0f}–{1.8 * blaze_nm:.0f} nm).", "wl_max"))
 
     return Design(
         G=G, included_deg=spec.included_deg, alpha=float(alpha), beta_center=float(beta_c),

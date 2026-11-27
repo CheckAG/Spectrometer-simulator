@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 
-import io
-
 import numpy as np
-from matplotlib.lines import Line2D
 
-from visualize import Canvas, get_colors
 from ray_utilities import initial_rays
 from raytracing_v import Lens, SphericalMirror, Grating, Sensor, propagate_rays
-from config import N_WAVELENGTH_SAMPLES, N_RAYS, N_SOURCE_POINTS, EXTRA_ORDERS
+from config import N_RAYS, N_SOURCE_POINTS
 from optics import Spec, Design
 
 
@@ -108,68 +104,3 @@ def sensor_hits(components, bundles):
     pts = bundles[:2, :, -1]
     y = (sensor.H @ np.vstack([pts, np.ones(pts.shape[1])]))[1]
     return np.where(np.abs(y) <= sensor.aperture / 2, y, np.nan)
-
-
-def design_rendering(spec: Spec, design: Design, extra_orders=EXTRA_ORDERS) -> bytes:
-    """
-    2-D ray-trace drawing of the design as PNG bytes (no files written).
-    The design order is drawn solid; `extra_orders` (e.g. 0 and 2) faint, to
-    show stray light and order overlap.
-    """
-    wavelengths = np.linspace(spec.wl_min, spec.wl_max, N_WAVELENGTH_SAMPLES)
-    n_rays = N_RAYS * N_SOURCE_POINTS
-    colors = np.repeat(np.array(get_colors(len(wavelengths), 1, cmap="rainbow"))[:, 0], n_rays, axis=0)
-    components, bundles = trace(spec, design, wavelengths)
-
-    xs = [c.pos[0] for c in components] + [0]
-    ys = [c.pos[1] for c in components] + [0]
-    margin = spec.grating_mm
-    canvas = Canvas(xlim=[min(xs) - margin, max(xs) + margin],
-                    ylim=[min(ys) - margin, max(ys) + margin])
-    canvas.draw_components(components)
-
-    styles = {0: ":", 2: "--"}                # design order is solid
-    names = {0: "undiffracted (stray light)", 2: "second order (overlap)"}
-
-    def label_order(rays, m, slot):
-        """
-        Arrow to where order m travels after the grating: its hit on the next
-        element, else a point along its path. Text is staggered by `slot` so
-        labels of nearby orders don't stack. Returns False if the order can't exist.
-        """
-        ok = ~np.isnan(rays[2, :, 2])
-        if not ok.any():
-            return False
-        nxt = rays[:2, ok, 3]
-        if np.isnan(nxt).all():                   # order misses the next element
-            x, y, a = rays[0, ok, 2], rays[1, ok, 2], rays[2, ok, 2]
-            nxt = np.vstack([x + 0.6 * spec.f2 * np.cos(a), y + 0.6 * spec.f2 * np.sin(a)])
-        x, y = np.nanmean(nxt, axis=1)
-        x, y = np.clip(x, *canvas.xlim), np.clip(y, *canvas.ylim)
-        canvas.axes.annotate(f"m = {m}", (x, y), xytext=(25, 25 - 22 * slot),
-                             textcoords="offset points", fontsize=8,
-                             bbox={"boxstyle": "round", "fc": "white", "alpha": 0.85},
-                             arrowprops={"arrowstyle": "->", "lw": 0.6})
-        return True
-
-    legend = [Line2D([], [], color="grey", lw=1.2, label=f"m = {spec.m}  design order")]
-    slot = 1
-    for m in extra_orders:
-        if m == spec.m:
-            continue
-        _, stray = trace(spec, design, wavelengths, m=m)
-        ls = styles.get(m, "-.")
-        canvas.draw_rays(stray, np.c_[colors, np.full(len(colors), 0.35)], linewidth=0.25,
-                         linestyle=ls)
-        exists = label_order(stray, m, slot)
-        slot += exists
-        legend.append(Line2D([], [], color="grey", lw=1.2, ls=ls,
-                             label=f"m = {m}  {names.get(m, '')}"
-                                   + ("" if exists else "  (not possible here)")))
-    canvas.draw_rays(bundles, colors, linewidth=0.3)
-    label_order(bundles, spec.m, 0)
-    canvas.axes.legend(handles=legend, loc="upper left", fontsize=7, framealpha=0.85)
-
-    buf = io.BytesIO()
-    canvas.save(buf)
-    return buf.getvalue()
