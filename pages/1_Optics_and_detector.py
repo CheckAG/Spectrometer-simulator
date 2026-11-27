@@ -1,8 +1,10 @@
 import streamlit as st
 
+from optics import Spec, recommend_groove_density
 from config import (
+    GRATING_TYPE_TRANSMISSIVE,
     DEFAULT_PIXEL_SIZE, DEFAULT_N_PIXELS, DEFAULT_SAMPLING, DEFAULT_F1, DEFAULT_F2,
-    DEFAULT_INCLUDED_ANGLE, PIXEL_SIZE_MIN, PIXEL_SIZE_MAX, N_PIXELS_MIN, N_PIXELS_MAX,
+    PIXEL_SIZE_MIN, PIXEL_SIZE_MAX, N_PIXELS_MIN, N_PIXELS_MAX,
     FOCAL_LENGTH_MIN, FOCAL_LENGTH_MAX, INCLUDED_ANGLE_MIN, INCLUDED_ANGLE_MAX,
 )
 
@@ -17,7 +19,7 @@ if saved is None or saved["grating_type"] != grating_type:
         "grating_type": grating_type,
         "pixel_um": DEFAULT_PIXEL_SIZE, "n_pixels": DEFAULT_N_PIXELS,
         "sampling": DEFAULT_SAMPLING, "f1": DEFAULT_F1, "f2": DEFAULT_F2,
-        "included_deg": DEFAULT_INCLUDED_ANGLE[grating_type],
+        "included_deg": None,  # None = computed for the chosen grating
     }
 
 st.title(":blue[Detector & Optics]")
@@ -43,13 +45,41 @@ f2 = c2.number_input("f2, focusing (mm)", FOCAL_LENGTH_MIN, FOCAL_LENGTH_MAX,
                      help="Longer f2 = more dispersion on the sensor = finer resolution.")
 
 st.subheader("Layout")
-included_deg = st.slider(
-    "Included angle α − β (°)", INCLUDED_ANGLE_MIN, INCLUDED_ANGLE_MAX,
-    float(saved["included_deg"]), step=1.0,
+p0 = st.session_state.page_0
+suggested = recommend_groove_density(Spec(
+    wl_min=p0["span_start"], wl_max=p0["span_end"], resolution=p0["spectral_resolution"],
+    pixel_um=pixel_um, n_pixels=int(n_pixels), sampling=sampling, f1=f1, f2=f2,
+    transmissive=grating_type == GRATING_TYPE_TRANSMISSIVE))
+computed = suggested.included_deg
+
+# saved["included_deg"] is None until the user moves the slider; until then the
+# slider follows the computed angle as the other inputs change.
+if saved["included_deg"] is None or "included_slider" not in st.session_state:
+    st.session_state.included_slider = (computed if saved["included_deg"] is None
+                                        else saved["included_deg"])
+
+
+def _keep_manual_angle():
+    saved["included_deg"] = st.session_state.included_slider
+
+
+st.slider(
+    "Included angle α − β (°)", INCLUDED_ANGLE_MIN, INCLUDED_ANGLE_MAX, step=1.0,
+    key="included_slider", on_change=_keep_manual_angle,
     help="Angle between the beam hitting the grating and the diffracted beam. "
-         "0° = Littrow (reflective) or symmetric (transmissive).")
+         "Pre-set to the computed angle: transmissive 0° (symmetric incidence, best "
+         "efficiency); reflective = smallest angle at which M1 and M2 don't collide, + 5°.")
+if saved["included_deg"] is None:
+    st.caption(f"Computed for the suggested {suggested.G} lines/mm grating. "
+               f"Move the slider to override.")
+else:
+    c1, c2 = st.columns([3, 1])
+    c1.caption(f"Manual. Computed value: {computed:g}° (for {suggested.G} lines/mm).")
+    if c2.button("Use computed"):
+        saved["included_deg"] = None
+        st.rerun()
 
 if st.button("Continue"):
     saved.update(pixel_um=pixel_um, n_pixels=int(n_pixels), sampling=sampling,
-                 f1=f1, f2=f2, included_deg=included_deg)
+                 f1=f1, f2=f2)
     st.switch_page("pages/2_final_result.py")
