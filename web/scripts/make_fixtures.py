@@ -3,7 +3,7 @@ Reference outputs from the Python core (spectrometer/) for the TypeScript port.
 
 Run from the repo root:  python web/scripts/make_fixtures.py
 Writes web/src/physics/fixtures.json; the Vitest suite checks the TS physics against it.
-NaN is written as null (JSON has no NaN).
+NaN is written as null (JSON has no NaN); floats are rounded to 12 significant digits.
 """
 
 import json
@@ -49,7 +49,11 @@ def clean(x):
     if isinstance(x, (list, tuple, np.ndarray)):
         return [clean(v) for v in x]
     if isinstance(x, (np.floating, float)):
-        return None if math.isnan(x) else float(x)
+        # 12 significant digits (and tiny values as 0): the last bits of libm/BLAS
+        # results differ between machines, and CI regenerates and diffs this file.
+        if math.isnan(x):
+            return None
+        return 0.0 if abs(x) < 1e-12 else float(f"{x:.12g}")
     if isinstance(x, np.integer):
         return int(x)
     if isinstance(x, np.bool_):
