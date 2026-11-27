@@ -1,6 +1,7 @@
 """Spectrometer designer: single-page Streamlit workbench."""
 
 import json
+from urllib.parse import urlencode
 from dataclasses import asdict, replace
 
 import numpy as np
@@ -189,6 +190,12 @@ with grating_slot:
 
 # Mirror inputs to the URL so the page link reproduces this design.
 st.query_params.from_dict({k: ss[k] for k in DEFAULTS if ss[k] is not None})
+
+# Same query keys as the browser version, so the link opens this exact design there.
+WEB_APP = "https://checkag.github.io/Spectrometer-simulator/"
+design_query = urlencode({k: ss[k] for k in DEFAULTS if ss[k] is not None})
+st.sidebar.link_button("✨ Open in the interactive bench", f"{WEB_APP}?{design_query}", width="stretch",
+                       help="The browser version: drag the optics on an optical bench, see what the sensor sees.")
 
 # ── Warnings next to their inputs ────────────────────────────────────────────
 SECTION = {"wl_min": "spectrum", "wl_max": "spectrum", "resolution": "spectrum",
