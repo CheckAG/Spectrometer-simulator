@@ -77,7 +77,8 @@ def _glyph(c, back, transmissive):
         w = 0.06 * c.aperture * (1 - (t / h) ** 2) + 0.4
         return np.r_[w, -w[::-1], w[:1]], np.r_[t, t[::-1], t[:1]]
     if c.type == "spherical_mirror":               # concave face, flat back
-        sag = (t ** 2 - h ** 2) / (4 * abs(c.f))  # edges reach toward the light
+        # Ideal mirrors act at the chord (x = 0); exact ones have their vertex there.
+        sag = (t ** 2 - (0 if getattr(c, "exact", False) else h ** 2)) / (4 * abs(c.f))
         x_face, x_back = -back * sag, np.full_like(t, back * 2.0)
         return np.r_[x_face, x_back[::-1], x_face[:1]], np.r_[t, t[::-1], t[:1]]
     if c.type == "grating":                        # substrate with sawtooth grooves
@@ -99,15 +100,15 @@ def _rgba(hex_color, a):
     return f"rgba({r},{g},{b},{a})"
 
 
-def ray_figure(spec: Spec, design: Design, extra_orders=EXTRA_ORDERS, height=520):
-    components, slit = build_components(spec, design)
+def ray_figure(spec: Spec, design: Design, extra_orders=EXTRA_ORDERS, height=520, exact=False):
+    components, slit = build_components(spec, design, exact=exact)
     wavelengths = np.linspace(spec.wl_min, spec.wl_max, N_WAVELENGTH_SAMPLES)
     pts = np.array([c.pos for c in components] + [slit.mean(axis=1)])
     reach = 1.5 * np.ptp(pts, axis=0).max() + spec.grating_mm
     fig = go.Figure()
 
     # Before the grating every wavelength shares one path: draw it once, as white light.
-    _, white = trace(spec, design, wavelengths[:1])
+    _, white = trace(spec, design, wavelengths[:1], exact=exact)
     xs, ys = _paths(white[:, :, :3], 0)
     fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", line=dict(color="#9a9a9a", width=1),
                              showlegend=False, hovertemplate="white light<extra></extra>"))
@@ -116,7 +117,7 @@ def ray_figure(spec: Spec, design: Design, extra_orders=EXTRA_ORDERS, height=520
     for m in reversed(orders):                     # design order drawn on top
         dash, opacity, text = ORDER_STYLE.get(m, ("dashdot", 0.45, ""))
         start = 2                                  # colour starts at the grating
-        _, bundles = trace(spec, design, wavelengths, m=m)
+        _, bundles = trace(spec, design, wavelengths, m=m, exact=exact)
         per_wl = bundles.shape[1] // len(wavelengths)
         exists = not np.isnan(bundles[2, :, 2]).all()
         label = f"m = {m}  {text}" + ("" if exists else " — not possible here")

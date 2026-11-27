@@ -113,6 +113,50 @@ class FocalElement(OpticalObject):
         return theta + np.pi if self.f < 0 else theta
 
 
+class ExactSphericalMirror(OpticalObject):
+    """
+    Concave spherical mirror traced exactly: real ray-circle intersection and
+    reflection about the surface normal, so spherical aberration, coma and the
+    off-axis (tangential) focus shift appear. Same placement as the ideal
+    SphericalMirror: vertex at `pos`, concave toward local −x, R = 2f.
+    2-D trace = tangential plane only (the dispersion direction); sagittal
+    astigmatism is out of plane and not modelled.
+    """
+    type = "spherical_mirror"
+    exact = True
+
+    def __init__(self, f, aperture, pos, theta, name=""):
+        self.f = f
+        self.R = 2 * f
+        super().__init__(aperture, pos, theta, name or f"f = {f:g}")
+
+    def get_intersection(self, orig, theta):
+        p = self.H @ np.vstack([orig, np.ones(orig.shape[1])])
+        th = theta + self.theta
+        ux, uy = np.cos(th), np.sin(th)
+        cx = p[0] + self.R                          # ray origin relative to the centre (−R, 0)
+        b = cx * ux + p[1] * uy
+        disc = b ** 2 - (cx ** 2 + p[1] ** 2 - self.R ** 2)
+        with np.errstate(invalid="ignore"):
+            roots = np.stack([-b - np.sqrt(disc), -b + np.sqrt(disc)])
+            # The vertex-side cap only (x > −R), nearest hit ahead of the ray.
+            on_cap = (p[0] + roots * ux > -self.R) & (roots > 1e-9)
+            t = np.where(on_cap, roots, np.inf).min(axis=0)
+        ahead = np.isfinite(t)
+        t = np.where(ahead, t, np.nan)
+        lx, ly = p[0] + t * ux, p[1] + t * uy
+        inside = ahead & (np.abs(ly) <= self.aperture / 2 + 1e-9)
+        self._local_hit = (lx, ly, ux, uy)
+        x, y = self.to_global(lx, ly)
+        return x, y, ahead, inside
+
+    def _get_angle(self, rays, lmb, dest):
+        lx, ly, ux, uy = self._local_hit
+        nx, ny = (lx + self.R) / self.R, ly / self.R  # unit surface normal
+        dot = ux * nx + uy * ny
+        return angle_wrap(np.arctan2(uy - 2 * dot * ny, ux - 2 * dot * nx) - self.theta)
+
+
 def Lens(f, aperture, pos, theta, name=""):
     return FocalElement(f=f, aperture=aperture, pos=pos, theta=theta,
                         reflective=False, name=name)
