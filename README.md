@@ -36,7 +36,7 @@ Requires Python 3.12+.
 ```bash
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/streamlit run User-input.py
+.venv/bin/streamlit run app.py
 ```
 
 Or open the repo in a dev container / Codespace; it installs and starts the app.
@@ -49,11 +49,13 @@ Or open the repo in a dev container / Codespace; it installs and starts the app.
 
 ## Code map
 
-| File | Role |
+| Path | Role |
 |---|---|
-| `optics.py` | Physics: grating equation, dispersion, resolution, blaze, design analysis and fixes |
-| `raytracing_v.py` | Vectorised 2-D ray tracer (lenses, mirrors, gratings, sensor) |
-| `grating.py` | Builds the 4f / Czerny–Turner layouts from a design and traces them |
-| `plot.py` | Plotly ray-trace figure |
-| `User-input.py` | Streamlit app |
-| `config.py` | Defaults and limits |
+| `app.py` | Streamlit app (single page) |
+| `spectrometer/optics.py` | Physics: grating equation, dispersion, resolution, blaze, design analysis and one-click fixes, detector model |
+| `spectrometer/tracer.py` | Vectorised 2-D ray tracer: ideal lenses/mirrors, exact spherical mirror, grating, sensor |
+| `spectrometer/layout.py` | Builds the 4f / Czerny–Turner layouts from a design, traces them, measures mirror blur |
+| `spectrometer/plot.py` | Plotly figures: ray trace, detector read-out, blaze efficiency |
+| `spectrometer/config.py` | Defaults and limits |
+| `notebooks/walkthrough.ipynb` | The design calculations step by step |
+| `tests/` | `pytest` suite (physics, tracer, traced layouts vs analytic) |

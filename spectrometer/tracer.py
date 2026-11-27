@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """
 Sequential 2-D ray tracer with ideal (thin) elements.
 
@@ -16,6 +15,20 @@ import numpy as np
 def angle_wrap(angle):
     """Wrap angle(s) to [-π, π]. Accepts scalars or arrays."""
     return np.arctan2(np.sin(angle), np.cos(angle))
+
+
+def fan_rays(points, element, n_rays):
+    """
+    A fan of `n_rays` from each source point (columns of `points`, shape (2, N))
+    spanning `element`'s full aperture. Returns (N·n_rays, 3) rays, grouped by point.
+    """
+    half = element.aperture / 2 * np.array([np.sin(element.theta), np.cos(element.theta)])
+    ends = np.stack([element.pos + half, element.pos - half])          # (2 ends, 2 xy)
+    px, py = np.asarray(points, dtype=float)
+    lo = np.arctan2(ends[0, 1] - py, ends[0, 0] - px)
+    hi = np.arctan2(ends[1, 1] - py, ends[1, 0] - px)
+    angles = lo[:, None] + (hi - lo)[:, None] * np.linspace(0, 1, n_rays)
+    return np.column_stack([np.repeat(px, n_rays), np.repeat(py, n_rays), angles.ravel()])
 
 
 def propagate_rays(components, rays, lmb=525e-9):
@@ -195,37 +208,3 @@ class Grating(OpticalObject):
         if self.transmissive:
             return angle_wrap(beta - self.theta)
         return angle_wrap(np.pi - beta - self.theta)
-
-
-class Mirror(OpticalObject):
-    """Flat mirror."""
-    type = "mirror"
-
-    def __init__(self, aperture, pos, theta, name="Mirror"):
-        super().__init__(aperture, pos, theta, name)
-
-    def _get_angle(self, rays, lmb, dest):
-        return angle_wrap(np.pi - rays[2] - 2 * self.theta)
-
-
-class DMD(OpticalObject):
-    """Digital micromirror device with a deflection angle."""
-    type = "dmd"
-
-    def __init__(self, deflection, aperture, pos, theta, name="DMD"):
-        super().__init__(aperture, pos, theta, name)
-        self.deflection = deflection
-
-    def _get_angle(self, rays, lmb=None, dest=None):
-        return angle_wrap(np.pi - rays[2] - 2 * (self.theta + self.deflection))
-
-
-class Aperture(OpticalObject):
-    """Hard aperture stop: passes rays inside, blocks those outside."""
-    type = "aperture"
-
-    def __init__(self, aperture, pos, theta, name="Aperture"):
-        super().__init__(aperture, pos, theta, name)
-
-    def _get_angle(self, rays, lmb=None, dest=None):
-        return rays[2]

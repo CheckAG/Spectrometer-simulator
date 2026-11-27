@@ -6,7 +6,7 @@ from dataclasses import asdict, replace
 import numpy as np
 import streamlit as st
 
-from config import (
+from spectrometer.config import (
     GROOVE_OPTIONS, GRATING_TYPES, GRATING_TYPE_TRANSMISSIVE, DIFFRACTION_ORDER,
     DEFAULT_SPAN_START, DEFAULT_SPAN_END, DEFAULT_SPECTRAL_RES, DEFAULT_GRATING_TYPE,
     DEFAULT_PIXEL_SIZE, DEFAULT_N_PIXELS, DEFAULT_SAMPLING, DEFAULT_F1, DEFAULT_F2,
@@ -15,9 +15,9 @@ from config import (
     FOCAL_LENGTH_MIN, FOCAL_LENGTH_MAX, INCLUDED_ANGLE_MIN, INCLUDED_ANGLE_MAX,
     LENS_APERTURE, GRATING_APERTURE,
 )
-from optics import (Spec, analyze, recommend_groove_density, detector_signal, line_dip,
+from spectrometer.optics import (Spec, analyze, recommend_groove_density, detector_signal, line_dip,
                     HG_AR_LINES, blaze_efficiency, default_blaze_wavelength)
-from plot import ray_figure, detector_figure, efficiency_figure
+from spectrometer.plot import ray_figure, detector_figure, efficiency_figure
 
 st.set_page_config(page_title="Spectrometer Designer", page_icon="🔭", layout="wide")
 

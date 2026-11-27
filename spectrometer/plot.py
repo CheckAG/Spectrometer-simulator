@@ -3,9 +3,9 @@
 import numpy as np
 import plotly.graph_objects as go
 
-from config import N_WAVELENGTH_SAMPLES, EXTRA_ORDERS
-from grating import build_components, trace
-from optics import Spec, Design
+from .config import N_WAVELENGTH_SAMPLES, EXTRA_ORDERS
+from .layout import build_components, trace
+from .optics import Spec, Design, blaze_efficiency
 
 ORDER_STYLE = {  # order: (dash, opacity, legend text)
     1: ("solid", 1.0, "design order"),
@@ -208,7 +208,6 @@ def detector_figure(wl_pix, signal, lines_nm, span=None, height=360):
 
 def efficiency_figure(wl_min, wl_max, blaze_nm, m=1, height=300):
     """Relative blaze efficiency in orders m and m+1 across and around the span."""
-    from optics import blaze_efficiency
     pad = 0.3 * (wl_max - wl_min)
     wl = np.linspace(max(wl_min - pad, 1.0), wl_max + pad, 400)
     fig = go.Figure()
