@@ -1,173 +1,103 @@
 #!/usr/bin/env python3
 
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib import patches, lines, cm
+from matplotlib import colormaps, patches
+from matplotlib.collections import LineCollection
+from matplotlib.figure import Figure
+
+# type → (patch width as fraction of aperture, style kwargs)
+_STYLES = {
+    "sensor":           (0.1,  dict(linestyle="dashed", hatch="+", color="c")),
+    "spherical_mirror": (0.05, dict(color="g")),
+    "mirror":           (0.05, dict(color="k")),
+    "grating":          (0.05, dict(hatch="/", color="m", alpha=0.4)),
+    "dmd":              (0.1,  dict(linestyle="dashed", hatch="x", color="g")),
+    "aperture":         (0.02, dict(color="b", alpha=0.5)),
+}
 
 
 class Canvas:
-    """2-D canvas for drawing optical components and ray paths."""
+    """2-D canvas for drawing optical components and ray paths.
 
-    def __init__(self, xlim, ylim, bbox=None, figsize=None, dpi=100):
-        if figsize is not None:
-            self._canvas, self.axes = plt.subplots(figsize=figsize)
-        else:
-            self._canvas, self.axes = plt.subplots()
+    Uses a bare Figure (no pyplot), so it never opens a window or leaks figures.
+    """
 
-        self.xlim = xlim
-        self.ylim = ylim
-        self.axes.axis("scaled")
+    def __init__(self, xlim, ylim, figsize=None, bbox=None):
+        self._canvas = Figure(figsize=figsize)
+        self.axes = self._canvas.subplots()
+        self.xlim, self.ylim = xlim, ylim
+        self.axes.set_aspect("equal")
         self.axes.set_xlim(xlim)
         self.axes.set_ylim(ylim)
         self.axes.grid(True)
-
-        if bbox is None:
-            bbox = {"facecolor": "yellow", "alpha": 0.5}
-        self.bbox = bbox
+        self.bbox = bbox or {"facecolor": "yellow", "alpha": 0.5}
 
     def draw_components(self, components):
-        for component in components:
-            xy = component.Hinv @ np.array([0, -component.aperture / 2, 1])
-            ctype = getattr(component, "type", "")
-
-            if ctype == "sensor":
-                artist = patches.Rectangle(
-                    xy=xy[:2], width=component.aperture * 0.1,
-                    height=component.aperture,
-                    angle=-np.degrees(component.theta),
-                    linestyle="dashed", hatch="+", color="c")
-                artist.set_alpha(1)
-            elif ctype == "lens":
-                artist = patches.Ellipse(
-                    xy=component.pos, width=component.aperture * 0.1,
-                    height=component.aperture,
-                    angle=-np.degrees(component.theta))
-                artist.set_alpha(0.5)
-            elif ctype == "spherical_mirror":
-                artist = patches.Rectangle(
-                    xy=xy[:2], width=component.aperture * 0.05,
-                    height=component.aperture,
-                    angle=-np.degrees(component.theta), color="g")
-                artist.set_alpha(1)
-            elif ctype == "mirror":
-                artist = patches.Rectangle(
-                    xy=xy[:2], width=component.aperture * 0.05,
-                    height=component.aperture,
-                    angle=-np.degrees(component.theta), color="k")
-                artist.set_alpha(1)
-            elif ctype == "grating":
-                artist = patches.Rectangle(
-                    xy=xy[:2], width=component.aperture * 0.05,
-                    height=component.aperture,
-                    angle=-np.degrees(component.theta), hatch="/", color="m")
-                artist.set_alpha(0.2)
-            elif ctype == "dmd":
-                artist = patches.Rectangle(
-                    xy=xy[:2], width=component.aperture * 0.1,
-                    height=component.aperture,
-                    angle=-np.degrees(component.theta),
-                    linestyle="dashed", hatch="x", color="g")
-                artist.set_alpha(1)
-            elif ctype == "aperture":
-                artist = patches.Rectangle(
-                    xy=xy[:2], width=component.aperture * 0.02,
-                    height=component.aperture,
-                    angle=-np.degrees(component.theta), color="b")
-                artist.set_alpha(0.5)
+        for c in components:
+            angle = -np.degrees(c.theta)
+            if c.type == "lens":
+                artist = patches.Ellipse(xy=c.pos, width=c.aperture * 0.1,
+                                         height=c.aperture, angle=angle, alpha=0.5)
+            elif c.type in _STYLES:
+                frac, style = _STYLES[c.type]
+                xy = c.Hinv @ np.array([0, -c.aperture / 2, 1])
+                artist = patches.Rectangle(xy=xy[:2], width=c.aperture * frac,
+                                           height=c.aperture, angle=angle, **style)
             else:
-                raise ValueError(f"Unknown component type: '{ctype}'")
-
+                raise ValueError(f"Unknown component type: '{c.type}'")
             self.axes.add_artist(artist)
 
-            if component.name is not None:
-                label_xy = component.Hinv @ np.array([8, -component.aperture / 2 - 8, 1])
-                self.axes.text(label_xy[0], label_xy[1], component.name, bbox=self.bbox)
+            if c.name is not None:
+                label_xy = c.Hinv @ np.array([8, -c.aperture / 2 - 8, 1])
+                self.axes.text(label_xy[0], label_xy[1], c.name, bbox=self.bbox)
 
-    def draw_rays(self, ray_bundles, colors=None, linewidth=0.5, membership=None):
+    def draw_rays(self, ray_bundles, colors=None, linewidth=0.5, linestyle="-"):
         """
         Draw propagated rays.
 
-        Parameters
-        ----------
-        ray_bundles : ndarray, shape (3, N_rays, N_components+1)
-                      as returned by propagate_rays()
-        colors : list of colours, one per ray
-        linewidth : float
-        membership : list of ints, one per ray (controls linestyle cycling)
+        ray_bundles : ndarray (3, N_rays, N_components+1) from propagate_rays()
+        colors      : one colour per ray
+        Rays are drawn up to their first NaN point; rays still travelling after
+        the last element are extended to the canvas edge.
         """
         nrays = ray_bundles.shape[1]
-
         if colors is None:
-            colors = [np.random.rand(3) for _ in range(nrays)]
-
-        if membership is None:
-            membership = [0] * nrays
-
+            colors = np.random.rand(nrays, 3)
         if len(colors) != nrays:
             raise ValueError("len(colors) must equal number of rays")
-        if len(membership) != nrays:
-            raise ValueError("len(membership) must equal number of rays")
 
-        linestyles = ["-", "--", ":"]
+        x, y, ang = ray_bundles
+        # Valid up to the first NaN, per ray.
+        valid = np.cumprod(~np.isnan(x), axis=1).astype(bool)
+        seg_ok = valid[:, :-1] & valid[:, 1:]
+        segs = np.stack([np.stack([x[:, :-1], y[:, :-1]], -1),
+                         np.stack([x[:, 1:], y[:, 1:]], -1)], axis=2)   # (N, S, 2, 2)
 
-        for r_idx in range(nrays):
-            ray = ray_bundles[:, r_idx, :]          # (3, N_comp+1)
-            style = linestyles[membership[r_idx] % 3]
-            color = colors[r_idx]
-            nsteps = ray.shape[1]
+        # Extension of the last segment for rays still travelling.
+        dist = np.hypot(self.xlim[1] - self.xlim[0], self.ylim[1] - self.ylim[0])
+        last = np.stack([x[:, -1], y[:, -1]], -1)
+        ext = np.stack([last, last + dist * np.stack([np.cos(ang[:, -1]), np.sin(ang[:, -1])], -1)], 1)
+        ext_ok = valid[:, -1] & ~np.isnan(ang[:, -1])
 
-            for idx in range(nsteps - 1):
-                if np.isnan(ray[0, idx]):
-                    break
-                line = lines.Line2D(
-                    [ray[0, idx], ray[0, idx + 1]],
-                    [ray[1, idx], ray[1, idx + 1]],
-                    color=color, linewidth=linewidth, linestyle=style)
-                self.axes.add_line(line)
-
-            # Extend the last valid ray segment to the canvas edge
-            last = nsteps - 1
-            if np.isnan(ray[0, last]):
-                continue
-            dist = np.hypot(self.xlim[1] - self.xlim[0], self.ylim[1] - self.ylim[0])
-            xmax = ray[0, last] + dist * np.cos(ray[2, last])
-            ymax = ray[1, last] + dist * np.sin(ray[2, last])
-            line = lines.Line2D(
-                [ray[0, last], xmax], [ray[1, last], ymax],
-                color=color, linewidth=linewidth, linestyle=style)
-            self.axes.add_line(line)
+        colors = np.asarray(colors, dtype=float)
+        ray_idx = np.repeat(np.arange(nrays), seg_ok.shape[1]).reshape(seg_ok.shape)
+        all_segs = np.concatenate([segs[seg_ok], ext[ext_ok]])
+        all_cols = np.concatenate([colors[ray_idx[seg_ok]], colors[ext_ok]])
+        self.axes.add_collection(LineCollection(all_segs, colors=all_cols,
+                                                linewidths=linewidth, linestyles=linestyle))
 
     def save(self, savename, dpi=150):
         self._canvas.savefig(savename, bbox_inches="tight", dpi=dpi)
 
     def close(self):
-        plt.close(self._canvas)
+        """Kept for compatibility; a bare Figure needs no closing."""
 
 
 def get_colors(nwvl, nrays, cmap="jet", flatten=False):
     """
-    Return a list of RGBA colours for visualisation.
-
-    Parameters
-    ----------
-    nwvl   : int  number of wavelengths
-    nrays  : int  number of rays per wavelength
-    cmap   : str  matplotlib colormap name
-    flatten: bool if True, return a single flat list
-
-    Returns
-    -------
-    colors_list : list of lists (or flat list if flatten=True)
+    RGB colours: one row of `nrays` identical colours per wavelength.
+    Returns a list of lists (or one flat list if flatten=True).
     """
-    colormap = plt.colormaps[cmap]
-    colors = colormap(np.linspace(0, 1, nwvl))
-
-    colors_list = []
-    for idx in range(nwvl):
-        row = [colors[idx, :3] for _ in range(nrays)]
-        if flatten:
-            colors_list += row
-        else:
-            colors_list.append(row)
-
-    return colors_list
+    rgb = colormaps[cmap](np.linspace(0, 1, nwvl))[:, :3]
+    rows = [[rgb[i]] * nrays for i in range(nwvl)]
+    return [c for row in rows for c in row] if flatten else rows

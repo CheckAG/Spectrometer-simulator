@@ -79,6 +79,15 @@ def blaze_angle(wl_blaze_nm, G, included_deg, m=1, transmissive=False, n_glass=1
     return float(np.degrees(np.arctan(np.sin(delta) / (n_glass - np.cos(delta)))))
 
 
+def fold_angle(clearance, distance):
+    """
+    Off-axis angle (deg) of a Czerny–Turner mirror so the folded beam clears an
+    element of half-size `clearance` placed `distance` away.
+    """
+    # ponytail: geometric clearance only; Shafer coma-cancelling angles need real mirrors
+    return float(max(5.0, np.degrees(0.5 * np.arcsin(min(clearance / distance, 0.9)))))
+
+
 @dataclass
 class Spec:
     """What the user wants plus the hardware they picked."""
@@ -119,7 +128,9 @@ class Design:
     dispersion: float         # rad/nm at centre
     rld: float                # reciprocal linear dispersion, nm/mm
     slit_um: float            # slit width whose image spans `sampling` pixels
-    spectrum_mm: float        # length of the span on a flat detector
+    spectrum_mm: float        # length of the span on the detector
+    fold1: float              # M1 off-axis angle, deg (0 for transmissive)
+    fold2: float              # M2 off-axis angle = detector tilt to the chief ray, deg
     resolution_image: float   # nm, slit image / pixel sampling limit
     resolution_grating: float  # nm, λ / (m·N_illuminated)
     resolution: float         # nm, combined
@@ -141,16 +152,27 @@ def analyze(spec: Spec, G: int) -> Design:
     blaze_nm = spec.blaze_nm or default_blaze_wavelength(spec.wl_min, spec.wl_max)
     theta_b = blaze_angle(blaze_nm, G, spec.included_deg, m, spec.transmissive, spec.n_glass)
 
-    D = angular_dispersion(G, beta_c, m)
-    rld = 1.0 / (f2 * D)
+    if spec.transmissive:
+        fold1 = fold2 = 0.0
+    else:
+        fold1 = fold_angle((spec.grating_mm + spec.beam_mm) / 2, f1)
+        fold2 = fold_angle((spec.grating_mm + spec.sensor_mm) / 2, f2)
 
-    # Flat detector normal to the centre ray, one focal length behind F2.
-    x_min, x_max = f2 * np.tan(np.radians([beta_min - beta_c, beta_max - beta_c]))
+    # Detector on the focal plane, which is tilted by fold2 to the chief ray in
+    # a Czerny–Turner: x(λ) = f2·[tan(Δβ − fold2) + tan(fold2)]. The tilt
+    # stretches everything at the detector by 1/cos²(fold2).
+    t2 = np.radians(fold2)
+    d_beta = np.radians([beta_min - beta_c, beta_max - beta_c])
+    x_min, x_max = f2 * (np.tan(d_beta - t2) + np.tan(t2))
     spectrum_mm = float(abs(x_max - x_min))
+    f2_eff = f2 / np.cos(t2) ** 2
+
+    D = angular_dispersion(G, beta_c, m)
+    rld = 1.0 / (f2_eff * D)
 
     # Slit imaged with magnification (f2/f1)·(cos α / cos β) (anamorphic term).
     image_mm = spec.sampling * spec.pixel_um * UM_TO_MM
-    mag = (f2 / f1) * np.cos(np.radians(alpha)) / np.cos(np.radians(beta_c))
+    mag = (f2_eff / f1) * np.cos(np.radians(alpha)) / np.cos(np.radians(beta_c))
     slit_um = image_mm / mag / UM_TO_MM
 
     footprint = spec.beam_mm / np.cos(np.radians(alpha))
@@ -182,6 +204,15 @@ def analyze(spec: Spec, G: int) -> Design:
     if resolution > spec.resolution:
         warnings.append(f"Achieved resolution {resolution:.3g} nm is worse than the "
                         f"{spec.resolution:g} nm target.")
+    if not spec.transmissive and np.isfinite(alpha):
+        # Mirrors sit f1 and f2 from the grating, (α − β) apart as seen from it.
+        gap = np.sqrt(f1**2 + f2**2 - 2 * f1 * f2 * np.cos(np.radians(spec.included_deg)))
+        m2_mm = (spec.beam_mm * np.cos(np.radians(beta_c)) / np.cos(np.radians(alpha))
+                 + f2 * abs(np.radians(beta_max - beta_min))) / np.cos(t2)
+        if gap < (spec.beam_mm + m2_mm) / 2:
+            warnings.append(f"M1 and M2 would overlap ({gap:.0f} mm apart, need "
+                            f"≈{(spec.beam_mm + m2_mm) / 2:.0f} mm). Increase the included "
+                            f"angle or the focal lengths.")
     if 2 * spec.wl_min < spec.wl_max:
         warnings.append(f"Second order of {spec.wl_min:g} nm lands on {2 * spec.wl_min:g} nm; "
                         f"an order-sorting (long-pass) filter is needed.")
@@ -194,7 +225,7 @@ def analyze(spec: Spec, G: int) -> Design:
         beta_min=float(beta_min), beta_max=float(beta_max),
         blaze_nm=blaze_nm, blaze_angle=theta_b,
         dispersion=float(D), rld=float(rld), slit_um=float(slit_um),
-        spectrum_mm=spectrum_mm,
+        spectrum_mm=spectrum_mm, fold1=fold1, fold2=fold2,
         resolution_image=float(res_image), resolution_grating=float(res_grating),
         resolution=resolution, warnings=warnings,
     )

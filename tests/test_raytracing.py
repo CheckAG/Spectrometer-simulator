@@ -138,33 +138,77 @@ def test_propagate_rays_no_figure_leak():
     assert after == before
 
 
+# ── vectorised tracer behaviour ──────────────────────────────────────────────
+
+def test_vectorised_propagate_matches_single_rays():
+    lens = Lens(f=100, aperture=50, pos=[100, 0], theta=0.2)
+    rays = np.array([[0.0, y, a] for y, a in [(0, 0), (2, 0.05), (-3, -0.1)]]).T
+    batch = lens.propagate(rays)
+    singles = np.stack([lens.propagate(rays[:, i]) for i in range(3)], axis=1)
+    assert np.allclose(batch, singles)
+
+
+def test_element_behind_ray_is_not_hit():
+    lens = Lens(f=100, aperture=50, pos=[-100, 0], theta=0)
+    assert np.all(np.isnan(lens.propagate(np.array([0.0, 0.0, 0.0]))))
+
+
+def test_evanescent_order_is_blocked_not_clipped():
+    grating = Grating(ngroves=2400, aperture=50, pos=[0, 0], theta=0, m=1, transmissive=True)
+    assert np.isnan(grating.propagate(np.array([-10.0, 0.0, 0.0]), lmb=900e-9)[2])
+
+
+def test_per_ray_wavelengths():
+    grating = Grating(ngroves=600, aperture=50, pos=[0, 0], theta=0.3, transmissive=True)
+    rays = np.array([[-10.0, 0, 0], [-10.0, 0, 0]]).T
+    out = grating.propagate(rays, lmb=np.array([400e-9, 700e-9]))
+    assert np.isclose(out[2, 0], grating.propagate(rays[:, 0], lmb=400e-9)[2])
+    assert np.isclose(out[2, 1], grating.propagate(rays[:, 1], lmb=700e-9)[2])
+
+
 # ── tracer agrees with optics.py ─────────────────────────────────────────────
 
-@pytest.mark.parametrize("transmissive,included", [(True, 0), (False, 30)])
-def test_traced_spectrum_matches_analytic(transmissive, included):
-    from optics import Spec, analyze
-    from grating import trace
-    spec = Spec(wl_min=400, wl_max=700, resolution=1.0, pixel_um=5.0, n_pixels=2048,
-                f1=50, f2=50, included_deg=included, transmissive=transmissive)
-    design = analyze(spec, 600)
+def _spec(**kw):
+    from optics import Spec
+    base = dict(wl_min=400, wl_max=700, resolution=1.0, pixel_um=5.0, n_pixels=2048,
+                f1=50, f2=50)
+    return Spec(**{**base, **kw})
+
+
+@pytest.mark.parametrize("transmissive,included", [(True, 0), (True, 20), (False, 40), (False, 60)])
+@pytest.mark.parametrize("G", [300, 600])
+def test_traced_spectrum_matches_analytic(transmissive, included, G):
+    from optics import analyze
+    from grating import trace, sensor_hits
+    spec = _spec(included_deg=included, transmissive=transmissive, n_pixels=4096)
+    design = analyze(spec, G)
+    assert design.spectrum_mm <= spec.sensor_mm
     components, bundles = trace(spec, design, [spec.wl_min, spec.wl_max])
-    sensor = components[-1]
-    centres = []
-    for b in bundles:
-        pts = b[:2, :, -1]
-        assert not np.isnan(pts).any()          # every ray reaches the sensor
-        local = sensor.H @ np.vstack([pts, np.ones(pts.shape[1])])
-        centres.append(local[1].mean())
-    assert np.isclose(abs(centres[1] - centres[0]), design.spectrum_mm, rtol=1e-4)
+    y = sensor_hits(components, bundles).reshape(2, -1)
+    assert not np.isnan(y).any()                       # every ray lands on the sensor
+    assert np.isclose(abs(y[1].mean() - y[0].mean()), design.spectrum_mm, rtol=1e-4)
+    # Slit image spans `sampling` pixels (ideal optics: no aberration blur).
+    assert np.allclose(np.ptp(y, axis=1), spec.sampling * spec.pixel_um * 1e-3, rtol=0.15)
+
+
+@pytest.mark.parametrize("transmissive,included", [(True, 0), (False, 40)])
+def test_second_order_overlaps_first_order_at_double_wavelength(transmissive, included):
+    from optics import analyze
+    from grating import trace, sensor_hits
+    spec = _spec(wl_min=400, wl_max=900, included_deg=included, transmissive=transmissive)
+    design = analyze(spec, 300)
+    c, first = trace(spec, design, [800])
+    _, second = trace(spec, design, [400], m=2)
+    assert np.isclose(np.nanmean(sensor_hits(c, first)), np.nanmean(sensor_hits(c, second)))
 
 
 # ── design_rendering ──────────────────────────────────────────────────────────
 
-def test_design_rendering_returns_png_and_closes_figure():
-    from optics import Spec, analyze
+@pytest.mark.parametrize("transmissive", [True, False])
+def test_design_rendering_returns_png_and_leaks_no_figure(transmissive):
+    from optics import analyze
     from grating import design_rendering
-    spec = Spec(wl_min=400, wl_max=700, resolution=1.0, pixel_um=5.0, n_pixels=2048,
-                f1=50, f2=50)
+    spec = _spec(transmissive=transmissive, included_deg=0 if transmissive else 40)
     before = len(plt.get_fignums())
     png = design_rendering(spec, analyze(spec, 600))
     assert png[:8] == b"\x89PNG\r\n\x1a\n"

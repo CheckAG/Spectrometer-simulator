@@ -39,9 +39,12 @@ GRATING_TYPES = [GRATING_TYPE_TRANSMISSIVE, GRATING_TYPE_REFLECTIVE]
 DEFAULT_GRATING_TYPE = GRATING_TYPE_TRANSMISSIVE
 # Included angle α − β (deg). 0 = symmetric (transmissive) / Littrow (reflective);
 # a reflective layout needs some angle so F2 does not sit on top of F1.
-DEFAULT_INCLUDED_ANGLE = {GRATING_TYPE_TRANSMISSIVE: 0.0, GRATING_TYPE_REFLECTIVE: 30.0}
+DEFAULT_INCLUDED_ANGLE = {GRATING_TYPE_TRANSMISSIVE: 0.0, GRATING_TYPE_REFLECTIVE: 40.0}
 
 # Simulation
 N_WAVELENGTH_SAMPLES = 10
 N_RAYS = 20
 N_SOURCE_POINTS = 2
+# Orders drawn faintly besides the design order (0 = undiffracted stray light,
+# 2 = order overlap).
+EXTRA_ORDERS = (0, 2)

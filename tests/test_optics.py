@@ -123,3 +123,16 @@ def test_finer_target_needs_more_lines():
     coarse = recommend_groove_density(spec(resolution=2.0))
     fine = recommend_groove_density(spec(resolution=0.3, n_pixels=4096))
     assert fine.G > coarse.G
+
+
+def test_ct_mirror_overlap_warns_only_when_tight():
+    tight = analyze(spec(transmissive=False, included_deg=10), 300)
+    roomy = analyze(spec(transmissive=False, included_deg=60), 300)
+    assert any("overlap" in w for w in tight.warnings)
+    assert not any("overlap" in w for w in roomy.warnings)
+
+
+def test_ct_detector_tilt_stretches_spectrum():
+    flat = analyze(spec(transmissive=True), 300)
+    ct = analyze(spec(transmissive=False, included_deg=0), 300)
+    assert ct.fold2 > 0 and ct.spectrum_mm > flat.spectrum_mm

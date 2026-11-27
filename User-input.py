@@ -53,9 +53,10 @@ with user_input:
     )
     if selected_grating_type == GRATING_TYPE_REFLECTIVE:
         st.info(
-            "Reflective grating selected. The simulation will use a "
-            "Czerny-Turner style folded layout where F2 and the sensor "
-            "are placed on the same side as the light source.",
+            "Reflective grating selected. The simulation uses a Czerny-Turner "
+            "layout: concave mirror M1 (focal length f1) collimates the slit, "
+            "the grating disperses, and concave mirror M2 (f2) focuses the "
+            "spectrum onto the sensor.",
             icon="ℹ️",
         )
 
