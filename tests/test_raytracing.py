@@ -138,17 +138,34 @@ def test_propagate_rays_no_figure_leak():
     assert after == before
 
 
-# ── design_rendering memory leak ──────────────────────────────────────────────
+# ── tracer agrees with optics.py ─────────────────────────────────────────────
 
-def test_design_rendering_closes_figure(tmp_path):
+@pytest.mark.parametrize("transmissive,included", [(True, 0), (False, 30)])
+def test_traced_spectrum_matches_analytic(transmissive, included):
+    from optics import Spec, analyze
+    from grating import trace
+    spec = Spec(wl_min=400, wl_max=700, resolution=1.0, pixel_um=5.0, n_pixels=2048,
+                f1=50, f2=50, included_deg=included, transmissive=transmissive)
+    design = analyze(spec, 600)
+    components, bundles = trace(spec, design, [spec.wl_min, spec.wl_max])
+    sensor = components[-1]
+    centres = []
+    for b in bundles:
+        pts = b[:2, :, -1]
+        assert not np.isnan(pts).any()          # every ray reaches the sensor
+        local = sensor.H @ np.vstack([pts, np.ones(pts.shape[1])])
+        centres.append(local[1].mean())
+    assert np.isclose(abs(centres[1] - centres[0]), design.spectrum_mm, rtol=1e-4)
+
+
+# ── design_rendering ──────────────────────────────────────────────────────────
+
+def test_design_rendering_returns_png_and_closes_figure():
+    from optics import Spec, analyze
     from grating import design_rendering
-    output = str(tmp_path / "test.png")
+    spec = Spec(wl_min=400, wl_max=700, resolution=1.0, pixel_um=5.0, n_pixels=2048,
+                f1=50, f2=50)
     before = len(plt.get_fignums())
-    design_rendering(
-        f1=50, f2=50, sensor_width=10,
-        start_wavelength=400, end_wavelength=700,
-        incident_angle=20, difracted_angle=10,
-        N=600, output_path=output,
-    )
-    after = len(plt.get_fignums())
-    assert after == before
+    png = design_rendering(spec, analyze(spec, 600))
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert len(plt.get_fignums()) == before
