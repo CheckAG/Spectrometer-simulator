@@ -181,6 +181,7 @@ def _apply(s, fix):
     (dict(wl_min=400, wl_max=900), 300, "wl_max"),             # order overlap
     (dict(transmissive=False, included_deg=10), 300, "included_deg"),  # mirrors collide
     (dict(blaze_nm=300), 300, "blaze_nm"),                      # off-span blaze
+    (dict(transmissive=False, exact_mirrors=True, resolution=2.0), 300, "f2"),  # aberrations
 ])
 def test_every_fix_clears_its_warning(kw, G, field):
     s = spec(**kw)
@@ -198,3 +199,18 @@ def test_blaze_efficiency_peaks_and_window():
     assert blaze_efficiency(250, 500, m=2) == pytest.approx(1)   # order 2 peaks at λB/2
     lo, hi = blaze_efficiency([0.67 * 500, 1.8 * 500], 500)
     assert 0.35 < lo < 0.5 and 0.4 < hi < 0.55                  # matches the rule-of-thumb window
+
+
+def test_exact_mirrors_feed_resolution_and_recommendation():
+    ideal = analyze(spec(transmissive=False), 300)
+    exact = analyze(spec(transmissive=False, exact_mirrors=True), 300)
+    assert exact.resolution_aberration > 0 and exact.resolution > ideal.resolution
+    assert exact.resolution == pytest.approx(np.hypot(ideal.resolution, exact.resolution_aberration))
+    assert exact.included_deg == ideal.included_deg           # angle stays geometric
+    assert len(exact.aberration_nm) == len(exact.aberration_wl) > 1
+    assert analyze(spec(exact_mirrors=True), 300).resolution_aberration == 0   # lenses: ideal
+
+
+def test_grazing_angles_are_impossible():
+    d = analyze(spec(transmissive=False, included_deg=77), 2400)   # α ≈ 96°
+    assert not d.ok

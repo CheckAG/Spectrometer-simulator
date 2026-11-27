@@ -19,6 +19,11 @@ checks the design against the sensor and ray-traces it — all live, on one page
   "f2 = 111 mm" or "Use 2755 pixels" that are verified to clear it.
 - **Interactive ray trace** (zoom, pan, hover): rays in their real colours,
   stray orders 0 and 2 on a toggle.
+- **Exact mirrors** (Czerny–Turner): trace real spherical mirrors to see
+  spherical aberration and coma; their blur feeds the resolution, the
+  grating recommendation and the fixes (equal longer mirrors, narrower beam).
+- **Detector view**: simulated pixel read-out of a calibration lamp or your
+  own lines, with the grating's blaze efficiency curve.
 - **Share & export**: every input lives in the URL, so a link reproduces the
   design; the full design downloads as JSON.
 

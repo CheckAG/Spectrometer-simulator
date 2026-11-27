@@ -106,6 +106,8 @@ def _best_focus(components, point, wl_nm, n_rays=101):
     rays, _, _ = initial_rays(np.asarray(point, float)[:, None], components[0], n_rays)
     out = propagate_rays(components, rays, lmb=wl_nm * 1e-9)[:, :, -1]
     out = out[:, np.isfinite(out).all(axis=0)]
+    if out.shape[1] < 2:                                      # nothing gets through
+        return np.full(2, np.nan)
     u = np.vstack([np.cos(out[2]), np.sin(out[2])])          # (2, N)
     P = np.eye(2)[None] - np.einsum("in,jn->nij", u, u)       # projectors ⟂ each ray
     return np.linalg.solve(P.sum(0), np.einsum("nij,jn->i", P, out[:2]))
@@ -126,9 +128,12 @@ def aberration_blur(spec: Spec, design: Design, n_wl=9, n_rays=201):
     bundles = propagate_rays(components, np.tile(rays, (n_wl, 1)), lmb=np.repeat(wls * 1e-9, n_rays))
     pts = bundles[:2, :, -1]                                  # unclipped: blur even off the sensor
     hits = (components[-1].H @ np.vstack([pts, np.ones(pts.shape[1])]))[1].reshape(n_wl, n_rays)
+    if np.isnan(hits).all():
+        return wls, np.full(n_wl, np.nan)
     centre = np.nanmean(hits, axis=1)
     dx_dl = np.gradient(centre, wls)                          # mm/nm along the sensor
-    return wls, 2.355 * np.nanstd(hits, axis=1) / np.abs(dx_dl)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return wls, 2.355 * np.nanstd(hits, axis=1) / np.abs(dx_dl)
 
 
 def trace(spec: Spec, design: Design, wavelengths_nm, m=None, exact=False):
