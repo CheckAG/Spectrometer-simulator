@@ -2,7 +2,7 @@ import streamlit as st
 
 from config import (
     DEFAULT_PIXEL_SIZE, DEFAULT_N_PIXELS, DEFAULT_SAMPLING, DEFAULT_F1, DEFAULT_F2,
-    DEFAULT_INCLUDED_ANGLE, PIXEL_SIZE_MIN, PIXEL_SIZE_MAX, N_PIXELS_MIN, N_PIXELS_MAX,
+    PIXEL_SIZE_MIN, PIXEL_SIZE_MAX, N_PIXELS_MIN, N_PIXELS_MAX,
     FOCAL_LENGTH_MIN, FOCAL_LENGTH_MAX, INCLUDED_ANGLE_MIN, INCLUDED_ANGLE_MAX,
 )
 
@@ -17,7 +17,7 @@ if saved is None or saved["grating_type"] != grating_type:
         "grating_type": grating_type,
         "pixel_um": DEFAULT_PIXEL_SIZE, "n_pixels": DEFAULT_N_PIXELS,
         "sampling": DEFAULT_SAMPLING, "f1": DEFAULT_F1, "f2": DEFAULT_F2,
-        "included_deg": DEFAULT_INCLUDED_ANGLE[grating_type],
+        "included_deg": None,  # None = computed for the chosen grating
     }
 
 st.title(":blue[Detector & Optics]")
@@ -43,11 +43,17 @@ f2 = c2.number_input("f2, focusing (mm)", FOCAL_LENGTH_MIN, FOCAL_LENGTH_MAX,
                      help="Longer f2 = more dispersion on the sensor = finer resolution.")
 
 st.subheader("Layout")
-included_deg = st.slider(
-    "Included angle α − β (°)", INCLUDED_ANGLE_MIN, INCLUDED_ANGLE_MAX,
-    float(saved["included_deg"]), step=1.0,
-    help="Angle between the beam hitting the grating and the diffracted beam. "
-         "0° = Littrow (reflective) or symmetric (transmissive).")
+auto = st.toggle("Compute included angle automatically (recommended)",
+                 value=saved["included_deg"] is None,
+                 help="Transmissive: 0° (symmetric incidence, best efficiency). "
+                      "Reflective: smallest angle at which M1 and M2 don't collide, + 5°.")
+included_deg = None
+if not auto:
+    included_deg = st.slider(
+        "Included angle α − β (°)", INCLUDED_ANGLE_MIN, INCLUDED_ANGLE_MAX,
+        float(saved["included_deg"] or 0.0), step=1.0,
+        help="Angle between the beam hitting the grating and the diffracted beam. "
+             "0° = Littrow (reflective) or symmetric (transmissive).")
 
 if st.button("Continue"):
     saved.update(pixel_um=pixel_um, n_pixels=int(n_pixels), sampling=sampling,

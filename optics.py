@@ -23,11 +23,11 @@ The ray tracer (raytracing_v.py) measures β with the opposite sign
 (β_tracer = −β); tests/test_raytracing.py checks the two agree.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from config import GROOVE_OPTIONS, GRATING_APERTURE, LENS_APERTURE
+from config import GROOVE_OPTIONS, GRATING_APERTURE, LENS_APERTURE, AUTO_ANGLE_MARGIN
 
 NM_TO_MM = 1e-6
 UM_TO_MM = 1e-3
@@ -98,7 +98,7 @@ class Spec:
     n_pixels: int                 # detector pixel count
     f1: float                     # collimator focal length, mm
     f2: float                     # focusing focal length, mm
-    included_deg: float = 0.0     # α − β at the centre wavelength
+    included_deg: float | None = None  # α − β at the centre; None → auto_included_angle
     transmissive: bool = True
     m: int = 1
     sampling: float = 3.0         # pixels per resolution element
@@ -119,6 +119,7 @@ class Spec:
 @dataclass
 class Design:
     G: int
+    included_deg: float       # α − β actually used
     alpha: float              # deg
     beta_center: float        # deg
     beta_min: float           # deg, at wl_min
@@ -135,15 +136,36 @@ class Design:
     resolution_grating: float  # nm, λ / (m·N_illuminated)
     resolution: float         # nm, combined
     warnings: list = field(default_factory=list)
+    mirrors_clear: bool = True  # Czerny–Turner: M1 and M2 don't overlap
 
     @property
     def ok(self):
         return np.isfinite(self.resolution)
 
 
+def auto_included_angle(spec: Spec, G: int, margin=AUTO_ANGLE_MARGIN) -> float:
+    """
+    Default included angle (deg).
+    Transmissive: 0 — symmetric (Bragg) incidence gives the best efficiency and
+    no anamorphic stretch, and nothing can collide.
+    Reflective: smallest whole degree at which M1 and M2 clear, plus `margin`
+    (closer to Littrow = better blaze efficiency, less off-axis aberration).
+    """
+    if spec.transmissive:
+        return 0.0
+    for angle in range(0, 91):
+        d = analyze(replace(spec, included_deg=float(angle)), G)
+        if d.ok and d.mirrors_clear:
+            return float(min(angle + margin, 90))
+    return 90.0
+
+
 def analyze(spec: Spec, G: int) -> Design:
     """Evaluate a spectrometer built from `spec` with a G lines/mm grating."""
+    if spec.included_deg is None:
+        spec = replace(spec, included_deg=auto_included_angle(spec, G))
     m, f1, f2 = spec.m, spec.f1, spec.f2
+    mirrors_clear = True
     warnings = []
 
     alpha, beta_c = grating_angles(spec.wl_center, G, spec.included_deg, m)
@@ -209,7 +231,8 @@ def analyze(spec: Spec, G: int) -> Design:
         gap = np.sqrt(f1**2 + f2**2 - 2 * f1 * f2 * np.cos(np.radians(spec.included_deg)))
         m2_mm = (spec.beam_mm * np.cos(np.radians(beta_c)) / np.cos(np.radians(alpha))
                  + f2 * abs(np.radians(beta_max - beta_min))) / np.cos(t2)
-        if gap < (spec.beam_mm + m2_mm) / 2:
+        mirrors_clear = bool(gap >= (spec.beam_mm + m2_mm) / 2)
+        if not mirrors_clear:
             warnings.append(f"M1 and M2 would overlap ({gap:.0f} mm apart, need "
                             f"≈{(spec.beam_mm + m2_mm) / 2:.0f} mm). Increase the included "
                             f"angle or the focal lengths.")
@@ -221,13 +244,13 @@ def analyze(spec: Spec, G: int) -> Design:
                         f"blaze (≈{0.67 * blaze_nm:.0f}–{1.8 * blaze_nm:.0f} nm).")
 
     return Design(
-        G=G, alpha=float(alpha), beta_center=float(beta_c),
+        G=G, included_deg=spec.included_deg, alpha=float(alpha), beta_center=float(beta_c),
         beta_min=float(beta_min), beta_max=float(beta_max),
         blaze_nm=blaze_nm, blaze_angle=theta_b,
         dispersion=float(D), rld=float(rld), slit_um=float(slit_um),
         spectrum_mm=spectrum_mm, fold1=fold1, fold2=fold2,
         resolution_image=float(res_image), resolution_grating=float(res_grating),
-        resolution=resolution, warnings=warnings,
+        resolution=resolution, warnings=warnings, mirrors_clear=mirrors_clear,
     )
 
 
@@ -235,7 +258,8 @@ def recommend_groove_density(spec: Spec, options=GROOVE_OPTIONS) -> Design:
     """
     Lowest stock groove density that meets the target resolution and fits the
     span on the sensor. Lower G = smaller angles, wider coverage, cheaper.
-    Falls back to the best-resolving design that still fits, then to any valid one.
+    Falls back to the best-resolving design that still fits, then to the valid
+    design whose spectrum comes closest to fitting the sensor.
     """
     designs = [analyze(spec, G) for G in sorted(options)]
     valid = [d for d in designs if d.ok]
@@ -243,5 +267,6 @@ def recommend_groove_density(spec: Spec, options=GROOVE_OPTIONS) -> Design:
     meets = [d for d in fits if d.resolution <= spec.resolution]
     if meets:
         return meets[0]
-    pool = fits or valid or designs
-    return min(pool, key=lambda d: d.resolution if d.ok else np.inf)
+    if fits:
+        return min(fits, key=lambda d: d.resolution)
+    return min(valid, key=lambda d: d.spectrum_mm) if valid else designs[0]

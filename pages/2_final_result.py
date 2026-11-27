@@ -65,8 +65,9 @@ c[3].metric("Type", p0["grating_type"])
 
 st.subheader("Angles")
 c = st.columns(4)
-c[0].metric("Incidence α", f"{r(d.alpha)}°")
-c[1].metric("β centre", f"{r(d.beta_center)}°")
+c[0].metric("Included angle α − β", f"{r(d.included_deg, 1)}°",
+            help="Computed automatically" if spec.included_deg is None else "Set manually")
+c[1].metric("Incidence α", f"{r(d.alpha)}°")
 c[2].metric(f"β at {spec.wl_min:g} nm", f"{r(d.beta_min)}°")
 c[3].metric(f"β at {spec.wl_max:g} nm", f"{r(d.beta_max)}°")
 

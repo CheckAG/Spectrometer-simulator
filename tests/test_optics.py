@@ -136,3 +136,31 @@ def test_ct_detector_tilt_stretches_spectrum():
     flat = analyze(spec(transmissive=True), 300)
     ct = analyze(spec(transmissive=False, included_deg=0), 300)
     assert ct.fold2 > 0 and ct.spectrum_mm > flat.spectrum_mm
+
+
+# ── auto included angle ───────────────────────────────────────────────────────
+
+def test_auto_angle_transmissive_is_symmetric():
+    d = analyze(spec(transmissive=True), 300)
+    assert d.included_deg == 0 and np.isclose(d.alpha, d.beta_center)
+
+
+def test_auto_angle_reflective_is_minimum_clearing_plus_margin():
+    from config import AUTO_ANGLE_MARGIN
+    d = analyze(spec(transmissive=False), 300)
+    assert d.mirrors_clear and not d.warnings
+    just_below = analyze(spec(transmissive=False,
+                              included_deg=d.included_deg - AUTO_ANGLE_MARGIN - 1), 300)
+    assert not just_below.mirrors_clear
+
+
+def test_auto_angle_shrinks_with_longer_focal_length():
+    short = analyze(spec(transmissive=False, f1=50, f2=50), 300)
+    long = analyze(spec(transmissive=False, f1=150, f2=150), 300)
+    assert long.included_deg < short.included_deg
+
+
+def test_recommendation_when_nothing_fits_picks_closest_to_fitting():
+    s = spec(f1=150, f2=150)            # even 300 l/mm overflows a 10 mm sensor
+    d = recommend_groove_density(s)
+    assert d.G == 300 and d.spectrum_mm > s.sensor_mm
