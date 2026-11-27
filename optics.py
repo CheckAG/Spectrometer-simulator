@@ -363,25 +363,26 @@ def sensor_position(spec: Spec, design: Design, wl_nm):
     return spec.f2 * (np.tan(np.radians(beta - design.beta_center) - t2) + np.tan(t2))
 
 
-def detector_signal(spec: Spec, design: Design, lines_nm, weights=None):
+def detector_signal(spec: Spec, design: Design, lines_nm, weights=None, extra_fwhm_nm=0.0):
     """
     Simulated detector read-out for a source of emission lines.
 
     Each line lands at sensor_position() and is blurred to the design's
     resolution (FWHM = resolution / rld on the detector, which combines the
-    slit image and the grating limit), then sampled at every pixel centre.
+    slit image and the grating limit), plus `extra_fwhm_nm` in quadrature
+    (scalar or per line, e.g. mirror aberrations), then sampled at every pixel centre.
     Returns (wavelength_nm per pixel, signal per pixel); pixels outside the
     reachable range get NaN wavelength.
     """
     # ponytail: Gaussian line shape; a rect slit image ⊗ pixel would sharpen the edges.
     pitch = spec.pixel_um * UM_TO_MM
     x_pix = (np.arange(spec.n_pixels) - (spec.n_pixels - 1) / 2) * pitch
-    fwhm = design.resolution / design.rld
     lines = np.atleast_1d(np.asarray(lines_nm, dtype=float))
+    fwhm = np.hypot(design.resolution, np.broadcast_to(extra_fwhm_nm, lines.shape)) / design.rld
     w = np.ones_like(lines) if weights is None else np.asarray(weights, dtype=float)
     x_line = sensor_position(spec, design, lines)
     ok = np.isfinite(x_line)
-    signal = (w[ok, None] * np.exp(-4 * np.log(2) * ((x_pix - x_line[ok, None]) / fwhm) ** 2)).sum(0)
+    signal = (w[ok, None] * np.exp(-4 * np.log(2) * ((x_pix - x_line[ok, None]) / fwhm[ok, None]) ** 2)).sum(0)
 
     # Pixel → wavelength by inverting the (monotonic) mapping on a fine grid.
     span = spec.wl_max - spec.wl_min

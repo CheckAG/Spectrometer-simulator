@@ -14,9 +14,10 @@ from config import (
     PIXEL_SIZE_MIN, PIXEL_SIZE_MAX, N_PIXELS_MIN, N_PIXELS_MAX,
     FOCAL_LENGTH_MIN, FOCAL_LENGTH_MAX, INCLUDED_ANGLE_MIN, INCLUDED_ANGLE_MAX,
 )
-from optics import (Spec, analyze, recommend_groove_density, detector_signal, line_dip,
+from optics import (Issue, Spec, analyze, recommend_groove_density, detector_signal, line_dip,
                     HG_AR_LINES, blaze_efficiency, default_blaze_wavelength)
 from plot import ray_figure, detector_figure, efficiency_figure
+from grating import aberration_blur
 
 st.set_page_config(page_title="Spectrometer Designer", page_icon="🔭", layout="wide")
 
@@ -30,7 +31,7 @@ DEFAULTS = {
     "resolution": DEFAULT_SPECTRAL_RES,
     "pixel_um": DEFAULT_PIXEL_SIZE, "n_pixels": DEFAULT_N_PIXELS, "sampling": DEFAULT_SAMPLING,
     "f1": DEFAULT_F1, "f2": DEFAULT_F2,
-    "angle": None, "G": None, "blaze": None,
+    "angle": None, "G": None, "blaze": None, "exact": False,
 }
 LIMITS = {
     "wl_min": (WAVELENGTH_MIN, WAVELENGTH_MAX), "wl_max": (WAVELENGTH_MIN, WAVELENGTH_MAX),
@@ -53,6 +54,8 @@ def clamp(key, value):
 def parse(key, raw):
     """Query-string value → typed, clamped value; None if unusable."""
     try:
+        if key == "exact":
+            return raw == "True"
         if key == "grating_type":
             return raw if raw in GRATING_TYPES else None
         if key == "G":
@@ -114,6 +117,11 @@ with st.sidebar:
     c1.number_input("f1, collimator (mm)", *LIMITS["f1"], step=5.0, key="f1")
     c2.number_input("f2, focusing (mm)", *LIMITS["f2"], step=5.0, key="f2",
                     help="Longer f2 spreads the spectrum more: finer resolution, longer spectrum.")
+    st.toggle("Exact mirrors (aberrations)", key="exact",
+              disabled=ss.grating_type == GRATING_TYPE_TRANSMISSIVE,
+              help="Czerny–Turner only. Trace real spherical mirrors instead of ideal ones: "
+                   "spherical aberration, coma and the off-axis focus shift blur the spectrum. "
+                   "The sensor is placed at the traced best focus.")
     slots["optics"] = st.container()
 
     angle_slot = st.container()   # filled once the computed angle is known
@@ -132,6 +140,19 @@ recommended = recommend_groove_density(spec)
 G = ss.G or recommended.G
 design = analyze(spec, G)
 computed_angle = analyze(replace(spec, included_deg=None), G).included_deg
+
+# Exact mirrors: traced blur adds in quadrature to the analytic resolution.
+exact = ss.exact and not spec.transmissive and design.ok
+resolution = design.resolution
+if exact:
+    blur_wl, blur_nm = aberration_blur(spec, design)
+    resolution = float(np.hypot(design.resolution, np.nanmax(blur_nm)))
+    if resolution > spec.resolution:
+        design.warnings.append(Issue(
+            f"Mirror aberrations add up to {np.nanmax(blur_nm):.2f} nm of blur, so resolution "
+            f"with exact mirrors is {resolution:.3f} nm (target {spec.resolution:g} nm). Fast, "
+            f"strongly folded mirrors cause it: longer f1/f2 or a smaller included angle "
+            f"reduce it.", "f2"))
 
 with angle_slot:
     # The slider shows the computed angle until the user moves it.
@@ -192,8 +213,8 @@ def fmt(x, digits=2):
 
 
 k = st.columns(5)
-k[0].metric("Resolution", f"{fmt(design.resolution, 3)} nm",
-            delta=f"{design.resolution - spec.resolution:+.3f} nm vs target" if design.ok else None,
+k[0].metric("Resolution" + (" (exact mirrors)" if exact else ""), f"{fmt(resolution, 3)} nm",
+            delta=f"{resolution - spec.resolution:+.3f} nm vs target" if design.ok else None,
             delta_color="inverse", border=True)
 k[1].metric("Sensor used", f"{fmt(design.spectrum_mm / spec.sensor_mm * 100, 0)} %",
             delta=f"{fmt(design.spectrum_mm, 1)} of {spec.sensor_mm:.1f} mm", delta_color="off",
@@ -223,7 +244,8 @@ trace_tab, detector_tab, values_tab, learn_tab, export_tab = st.tabs(
 with trace_tab:
     show_stray = st.toggle("Show stray orders (0 and 2)", value=True)
     if design.ok:
-        st.plotly_chart(ray_figure(spec, design, extra_orders=(0, 2) if show_stray else ()),
+        st.plotly_chart(ray_figure(spec, design, extra_orders=(0, 2) if show_stray else (),
+                                   exact=exact),
                         width="stretch", config={"scrollZoom": True})
         st.caption("Scroll to zoom, drag to pan, double-click to reset. Hover a ray for its "
                    "wavelength and order; click a legend entry to hide an order.")
@@ -249,11 +271,12 @@ with detector_tab:
     elif lines:
         # Lamp lines taken as equally bright; the grating's efficiency weights them.
         wl_pix, signal = detector_signal(spec, design, lines,
-                                         blaze_efficiency(lines, design.blaze_nm, spec.m))
+                                         blaze_efficiency(lines, design.blaze_nm, spec.m),
+                                         np.interp(lines, blur_wl, blur_nm) if exact else 0.0)
         st.plotly_chart(detector_figure(wl_pix, signal, lines,
                                         (spec.wl_min, spec.wl_max)), width="stretch")
         st.caption(f"{spec.n_pixels} pixels of {spec.pixel_um:g} µm. Each line is blurred to the "
-                   f"design resolution ({design.resolution:.3f} nm FWHM) and scaled by the grating "
+                   f"design resolution ({resolution:.3f} nm FWHM) and scaled by the grating "
                    f"efficiency below; dotted lines mark the true wavelengths. Drag to zoom "
                    f"in on a pair, double-click to reset.")
         close = sorted(lines)
@@ -284,7 +307,7 @@ with detector_tab:
 
 with values_tab:
     rows = [
-        ("Resolution", "Achieved", fmt(design.resolution, 3), "nm"),
+        ("Resolution", "Achieved", fmt(resolution, 3), "nm"),
         ("Resolution", "Slit / pixel limit", fmt(design.resolution_image, 3), "nm"),
         ("Resolution", "Grating limit", fmt(design.resolution_grating, 3), "nm"),
         ("Grating", "Grooves", f"{G}", "lines/mm"),
@@ -302,6 +325,9 @@ with values_tab:
     if not spec.transmissive:
         rows += [("Optics", "M1 off-axis angle", fmt(design.fold1, 1), "°"),
                  ("Optics", "M2 off-axis angle (detector tilt)", fmt(design.fold2, 1), "°")]
+    if exact:
+        rows.insert(3, ("Resolution", "Mirror aberration blur",
+                        f"{np.nanmin(blur_nm):.3f} – {np.nanmax(blur_nm):.3f}", "nm"))
     st.dataframe([dict(zip(["Group", "Quantity", "Value", "Unit"], r)) for r in rows],
                  hide_index=True, width="stretch")
 

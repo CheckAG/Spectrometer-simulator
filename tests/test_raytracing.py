@@ -232,3 +232,25 @@ def test_detector_signal_peaks_and_doublet():
     split = lambda sep: line_dip(*detector_signal(spec, design, [577, 577 + sep]), 577, 577 + sep)
     assert split(2 * design.resolution) < 0.81 < split(0.6 * design.resolution)
     assert np.isnan(line_dip(wl, sig, 100, 110))     # off the sensor
+
+
+def test_exact_mirror_spherical_aberration_matches_theory():
+    """Parallel rays at height y focus at R − R/(2·cos θ), sin θ = y/R (marginal focus)."""
+    from raytracing_v import ExactSphericalMirror
+    f, ys = 50.0, np.array([0.5, 5.0, 12.0])
+    out = ExactSphericalMirror(f=f, aperture=25.4, pos=[0, 0], theta=0).propagate(
+        np.vstack([np.full(3, -100.0), ys, np.zeros(3)]))
+    crossing = out[0] - out[1] / np.tan(out[2])            # where each ray meets the axis
+    th = np.arcsin(ys / (2 * f))
+    assert np.allclose(crossing, -(2 * f - f / np.cos(th)), atol=1e-9)
+
+
+def test_aberration_blur_scales_with_beam_and_vanishes_for_lenses():
+    from optics import analyze
+    from grating import aberration_blur
+    blur = lambda **kw: aberration_blur(_spec(**kw), analyze(_spec(**kw), 300))[1]
+    assert not blur(transmissive=True).any()                # ideal lenses: no aberration
+    wide, narrow = blur(transmissive=False), blur(transmissive=False, beam_mm=6.35)
+    assert np.all(narrow < wide / 5)                         # coma ∝ y², spherical ∝ y³
+    slow = blur(transmissive=False, beam_mm=6.35, f1=200, f2=200, n_pixels=4096)
+    assert np.all(slow < 0.1)                                # slow, barely folded: near ideal
