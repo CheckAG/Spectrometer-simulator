@@ -164,3 +164,28 @@ def test_recommendation_when_nothing_fits_picks_closest_to_fitting():
     s = spec(f1=150, f2=150)            # even 300 l/mm overflows a 10 mm sensor
     d = recommend_groove_density(s)
     assert d.G == 300 and d.spectrum_mm > s.sensor_mm
+
+
+# ── one-click fixes ───────────────────────────────────────────────────────────
+
+def _apply(s, fix):
+    from dataclasses import replace
+    return replace(s, **fix)
+
+
+@pytest.mark.parametrize("kw,G,field", [
+    (dict(f1=150, f2=150), 300, "f2"),                         # spectrum overflows sensor
+    (dict(f1=150, f2=150, transmissive=False), 300, "f2"),     # same, Czerny–Turner (nonlinear)
+    (dict(resolution=0.1, n_pixels=512), 600, "n_pixels"),     # too few pixels
+    (dict(resolution=0.3), 300, "resolution"),                 # target not met
+    (dict(wl_min=400, wl_max=900), 300, "wl_max"),             # order overlap
+    (dict(transmissive=False, included_deg=10), 300, "included_deg"),  # mirrors collide
+])
+def test_every_fix_clears_its_warning(kw, G, field):
+    s = spec(**kw)
+    issues = [w for w in analyze(s, G).warnings if w.field == field and w.fixes]
+    assert issues
+    for issue in issues:
+        for label, fix in issue.fixes.items():
+            after = analyze(_apply(s, fix), G).warnings
+            assert not any(w.field == field and w[:20] == issue[:20] for w in after), label
