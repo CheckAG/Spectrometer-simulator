@@ -19,15 +19,15 @@ symmetric/minimum-deviation for transmissive). For a centre wavelength:
 Units at the API: wavelength nm, lengths mm, pixel size µm, angles degrees,
 groove density G lines/mm. Angles that cannot exist (|sin| > 1) come back NaN.
 
-The ray tracer (raytracing_v.py) measures β with the opposite sign
-(β_tracer = −β); tests/test_raytracing.py checks the two agree.
+The ray tracer (tracer.py) measures β with the opposite sign
+(β_tracer = −β); tests/test_layout.py checks the two agree.
 """
 
 from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from config import (GROOVE_OPTIONS, GRATING_APERTURE, LENS_APERTURE, AUTO_ANGLE_MARGIN,
+from .config import (GROOVE_OPTIONS, GRATING_APERTURE, LENS_APERTURE, AUTO_ANGLE_MARGIN,
                     FOCAL_LENGTH_MAX)
 
 NM_TO_MM = 1e-6
@@ -289,7 +289,7 @@ def analyze(spec: Spec, G: int, fixes: bool = True) -> Design:
         resolution_image=float(res_image), resolution_grating=float(res_grating))
     aberration = {}
     if spec.exact_mirrors and not spec.transmissive and np.isfinite(resolution):
-        from grating import aberration_blur        # grating imports this module
+        from .layout import aberration_blur        # layout imports this module
         wl, blur = aberration_blur(spec, Design(**common, resolution=resolution))
         # No traced light at the sensor (NaN) → the design is not usable.
         ideal, worst = resolution, float(np.max(blur))
@@ -415,7 +415,7 @@ HG_AR_LINES = (404.66, 435.83, 546.07, 576.96, 579.07, 696.54, 706.72, 738.40, 7
 def sensor_position(spec: Spec, design: Design, wl_nm):
     """
     Position (mm) of wavelength(s) along the detector, measured from where the
-    centre wavelength lands (the sensor centre in grating.py). Same tilted
+    centre wavelength lands (the sensor centre in layout.py). Same tilted
     focal-plane mapping as analyze(); NaN where the order cannot exist.
     """
     beta = diffraction_angle(wl_nm, design.G, design.alpha, spec.m)

@@ -1,12 +1,7 @@
-import os
-import sys
-
 import numpy as np
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from optics import (
+from spectrometer.optics import (
     Spec, analyze, angular_dispersion, blaze_angle, default_blaze_wavelength,
     diffraction_angle, grating_angles, recommend_groove_density,
 )
@@ -146,7 +141,7 @@ def test_auto_angle_transmissive_is_symmetric():
 
 
 def test_auto_angle_reflective_is_minimum_clearing_plus_margin():
-    from config import AUTO_ANGLE_MARGIN
+    from spectrometer.config import AUTO_ANGLE_MARGIN
     d = analyze(spec(transmissive=False), 300)
     assert d.mirrors_clear and not d.warnings
     just_below = analyze(spec(transmissive=False,
@@ -194,7 +189,7 @@ def test_every_fix_clears_its_warning(kw, G, field):
 
 
 def test_blaze_efficiency_peaks_and_window():
-    from optics import blaze_efficiency
+    from spectrometer.optics import blaze_efficiency
     assert blaze_efficiency(500, 500) == pytest.approx(1)
     assert blaze_efficiency(250, 500, m=2) == pytest.approx(1)   # order 2 peaks at λB/2
     lo, hi = blaze_efficiency([0.67 * 500, 1.8 * 500], 500)

@@ -1,7 +1,6 @@
 __pycache__
-PLAN.md
+.pytest_cache
+.venv
 .claude
 .streamlit
-img/grating.png
-.venv
 .agents/

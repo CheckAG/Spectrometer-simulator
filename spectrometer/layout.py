@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
+"""Physical layouts (4f, Czerny–Turner) built from a design, and traced."""
 
 import numpy as np
 
-from ray_utilities import initial_rays
-from raytracing_v import Lens, SphericalMirror, ExactSphericalMirror, Grating, Sensor, propagate_rays
-from config import N_RAYS, N_SOURCE_POINTS
-from optics import Spec, Design
+from .tracer import (Lens, SphericalMirror, ExactSphericalMirror, Grating, Sensor,
+                     fan_rays, propagate_rays)
+from .config import N_RAYS, N_SOURCE_POINTS
+from .optics import Spec, Design
 
 
 def _unit(angle):
@@ -25,6 +25,10 @@ def build_components(spec: Spec, design: Design, m=None, exact=False):
     f1, f2 = spec.f1, spec.f2
     alpha, beta = np.radians(design.alpha), np.radians(design.beta_center)
     m = spec.m if m is None else m
+    # The focusing element (F2 / M2) catches the beam, widened by cos β / cos α
+    # at the grating, plus its walk across the span over the f2 distance.
+    beam2 = spec.beam_mm * np.cos(beta) / np.cos(alpha)
+    spread = f2 * abs(np.radians(design.beta_max - design.beta_min))
 
     if spec.transmissive:
         # Tracer measures β with the opposite sign to optics.py, hence −(α + β).
@@ -32,11 +36,16 @@ def build_components(spec: Spec, design: Design, m=None, exact=False):
         theta_elem = -out_dir                     # F2 and sensor face the centre ray
         p_f2 = np.array([2 * f1, 0]) + f2 * _unit(out_dir)
         p_sensor = p_f2 + f2 * _unit(out_dir)
+        # F2 faces the centre ray, so edge wavelengths land off-centre and slanted:
+        # size it for the worse side (spread is not symmetric about the centre).
+        worst = np.radians(max(abs(design.beta_max - design.beta_center),
+                               abs(design.beta_min - design.beta_center)))
+        f2_aperture = 1.02 * (beam2 / np.cos(worst) + 2 * f2 * np.tan(worst))
         components = [
             Lens(f=f1, aperture=spec.beam_mm, pos=[f1, 0], theta=0, name="F1"),
             Grating(ngroves=design.G, aperture=spec.grating_mm, pos=[2 * f1, 0],
                     theta=alpha, m=m, transmissive=True),
-            Lens(f=f2, aperture=spec.grating_mm, pos=p_f2, theta=theta_elem, name="F2"),
+            Lens(f=f2, aperture=f2_aperture, pos=p_f2, theta=theta_elem, name="F2"),
             Sensor(aperture=spec.sensor_mm, pos=p_sensor, theta=theta_elem),
         ]
         slit_pos, slit_dir = np.zeros(2), 0.0
@@ -72,9 +81,6 @@ def build_components(spec: Spec, design: Design, m=None, exact=False):
         # Exact sphere: off-axis (tangential) focus is at f·cos(off) (Coddington).
         slit_pos = p_m1 - (f1 * np.cos(off1) if exact else f1 / np.cos(off1)) * _unit(slit_dir)
 
-        # Beam widens by cos β / cos α at the grating, then walks with λ.
-        beam2 = spec.beam_mm * np.cos(beta) / np.cos(alpha)
-        spread = f2 * abs(np.radians(design.beta_max - design.beta_min))
         m2, sensor_pos = fold(f2, p_m2, to_m2, off2, (beam2 + spread) / np.cos(off2), "M2")
         grating = Grating(ngroves=design.G, aperture=spec.grating_mm, pos=[0, 0],
                           theta=-np.pi / 2, m=m, transmissive=False)
@@ -103,7 +109,7 @@ def _best_focus(components, point, wl_nm, n_rays=101):
     Point closest (least squares) to every ray of a fan from `point` that
     leaves the last component: the circle of least confusion in 2-D.
     """
-    rays, _, _ = initial_rays(np.asarray(point, float)[:, None], components[0], n_rays)
+    rays = fan_rays(np.asarray(point, float)[:, None], components[0], n_rays)
     out = propagate_rays(components, rays, lmb=wl_nm * 1e-9)[:, :, -1]
     out = out[:, np.isfinite(out).all(axis=0)]
     if out.shape[1] < 2:                                      # nothing gets through
@@ -124,7 +130,7 @@ def aberration_blur(spec: Spec, design: Design, n_wl=9, n_rays=201):
     if spec.transmissive:
         return wls, np.zeros(n_wl)
     components, slit = build_components(spec, design, exact=True)
-    rays, _, _ = initial_rays(slit.mean(axis=1)[:, None], components[0], n_rays)
+    rays = fan_rays(slit.mean(axis=1)[:, None], components[0], n_rays)
     bundles = propagate_rays(components, np.tile(rays, (n_wl, 1)), lmb=np.repeat(wls * 1e-9, n_rays))
     pts = bundles[:2, :, -1]                                  # unclipped: blur even off the sensor
     hits = (components[-1].H @ np.vstack([pts, np.ones(pts.shape[1])]))[1].reshape(n_wl, n_rays)
@@ -143,7 +149,7 @@ def trace(spec: Spec, design: Design, wavelengths_nm, m=None, exact=False):
     rays grouped by wavelength (wavelength i = rays i·n_rays … (i+1)·n_rays − 1).
     """
     components, slit = build_components(spec, design, m, exact)
-    rays, _, _ = initial_rays(slit, components[0], N_RAYS)
+    rays = fan_rays(slit, components[0], N_RAYS)
     n = len(rays)
     wl = np.repeat(np.asarray(wavelengths_nm, dtype=float) * 1e-9, n)
     return components, propagate_rays(components, np.tile(rays, (len(wavelengths_nm), 1)), lmb=wl)
