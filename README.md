@@ -92,8 +92,8 @@ npm run fixtures   # regenerate fixtures after changing the Python core
 
 - **Classic app**: Streamlit Community Cloud runs `app.py` from `master` (Python 3.13).
   After a merge that adds new names to a module, reboot it from *Manage app*.
-- **Interactive bench**: `.github/workflows/web.yml` runs the Python tests, checks
-  the fixtures are current, runs the web tests and build, and on `master` deploys
+- **Interactive bench**: `.github/workflows/web.yml` runs the Python tests, regenerates
+  the fixtures from the Python core, runs the web tests against them and builds, and on `master` deploys
   `web/dist` to GitHub Pages.
 
 </details>

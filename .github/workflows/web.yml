@@ -26,11 +26,11 @@ jobs:
         run: |
           pip install -r requirements.txt
           python -m pytest -q
-      # The TS port is checked against the Python core: regenerated fixtures must match the committed ones.
-      - name: Fixtures are up to date
-        run: |
-          python web/scripts/make_fixtures.py
-          git diff --exit-code web/src/physics/fixtures.json
+      # Regenerate the reference outputs from the Python core here, so the TS tests below
+      # check the port against the current Python physics (within tolerance — the last
+      # bits of floating-point results differ between machines, so no byte-for-byte diff).
+      - name: Regenerate fixtures from the Python core
+        run: python web/scripts/make_fixtures.py
       - name: Web tests and build
         working-directory: web
         run: |
