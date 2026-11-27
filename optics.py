@@ -66,6 +66,16 @@ def default_blaze_wavelength(wl_min, wl_max):
     return float(np.sqrt((wl_max / 1.8) * (wl_min / 0.67)))
 
 
+def blaze_efficiency(wl_nm, blaze_nm, m=1):
+    """
+    Relative diffraction efficiency (peak 1) of a blazed grating in order m,
+    scalar theory: sinc²(π·(m − λB/λ)). Order m peaks at λB/m.
+    Gives ≈ 40–50 % at 0.67·λB and 1.8·λB, the window used by default_blaze_wavelength.
+    """
+    # ponytail: scalar model; polarisation and Wood's anomalies need vector (RCWA) theory.
+    return np.sinc(m - blaze_nm / np.asarray(wl_nm, dtype=float)) ** 2
+
+
 def blaze_angle(wl_blaze_nm, G, included_deg, m=1, transmissive=False, n_glass=1.5):
     """Facet angle (deg) that puts peak efficiency at wl_blaze_nm."""
     alpha, beta = grating_angles(wl_blaze_nm, G, included_deg, m)
@@ -299,8 +309,14 @@ def analyze(spec: Spec, G: int, fixes: bool = True) -> Design:
                               {f"Limit span to {spec.wl_min:g}–{2 * spec.wl_min:g} nm":
                                {"wl_max": float(2 * spec.wl_min)}}))
     if spec.wl_min < 0.67 * blaze_nm or spec.wl_max > 1.8 * blaze_nm:
-        warnings.append(Issue(f"Span extends beyond the efficient range of a {blaze_nm:.0f} nm "
-                              f"blaze (≈{0.67 * blaze_nm:.0f}–{1.8 * blaze_nm:.0f} nm).", "wl_max"))
+        eta = blaze_efficiency([spec.wl_min, spec.wl_max], blaze_nm, m)
+        auto = default_blaze_wavelength(spec.wl_min, spec.wl_max)
+        fits = 0.67 * auto <= spec.wl_min and spec.wl_max <= 1.8 * auto
+        warnings.append(Issue(
+            f"Span extends beyond the efficient range of a {blaze_nm:.0f} nm blaze "
+            f"(≈{0.67 * blaze_nm:.0f}–{1.8 * blaze_nm:.0f} nm); relative efficiency "
+            f"{eta[0]:.0%} at {spec.wl_min:g} nm, {eta[1]:.0%} at {spec.wl_max:g} nm.", "blaze_nm",
+            {f"Blaze at {auto:.0f} nm": {"blaze_nm": None}} if spec.blaze_nm and fits else {}))
 
     return Design(
         G=G, included_deg=spec.included_deg, alpha=float(alpha), beta_center=float(beta_c),

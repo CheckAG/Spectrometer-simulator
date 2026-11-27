@@ -203,3 +203,25 @@ def detector_figure(wl_pix, signal, lines_nm, span=None, height=360):
     fig.update_yaxes(title="signal (peak = 1)", rangemode="tozero")
     fig.update_layout(height=height, margin=dict(l=10, r=10, t=10, b=10), dragmode="zoom")
     return fig
+
+
+def efficiency_figure(wl_min, wl_max, blaze_nm, m=1, height=300):
+    """Relative blaze efficiency in orders m and m+1 across and around the span."""
+    from optics import blaze_efficiency
+    pad = 0.3 * (wl_max - wl_min)
+    wl = np.linspace(max(wl_min - pad, 1.0), wl_max + pad, 400)
+    fig = go.Figure()
+    fig.add_vrect(x0=wl_min, x1=wl_max, fillcolor="#9a9a9a", opacity=0.08, line_width=0,
+                  annotation_text="design span", annotation_position="top left")
+    fig.add_vline(x=blaze_nm / m, line=dict(color="#C04BD6", width=1, dash="dot"),
+                  annotation_text=f"blaze {blaze_nm:.0f} nm", annotation_position="top right")
+    for k, dash in ((m, "solid"), (m + 1, "dash")):
+        fig.add_trace(go.Scatter(
+            x=wl, y=blaze_efficiency(wl, blaze_nm, k), mode="lines", name=f"order {k}",
+            line=dict(color="#C04BD6", width=2 if k == m else 1.2, dash=dash),
+            hovertemplate=f"order {k} · %{{x:.0f}} nm · %{{y:.0%}}<extra></extra>"))
+    fig.update_xaxes(title="wavelength (nm)")
+    fig.update_yaxes(title="relative efficiency", range=[0, 1.05], tickformat=".0%")
+    fig.update_layout(height=height, margin=dict(l=10, r=10, t=30, b=10),
+                      legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0))
+    return fig
